@@ -1,0 +1,2 @@
+[console_scripts]
+nicolet-e2edf = nicolet.cli:main
