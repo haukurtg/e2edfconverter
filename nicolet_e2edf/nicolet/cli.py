@@ -22,7 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--in", dest="input_path", required=True, help="Input .e file or folder")
     parser.add_argument("--out", dest="output_dir", required=True, help="Output directory")
-    parser.add_argument("--glob", default="*.e", help="Glob pattern when input is a folder")
+    parser.add_argument(
+        "--glob",
+        default="*.e",
+        help="Glob pattern when input is a folder (default also picks up .eeg files)",
+    )
     parser.add_argument(
         "--patient-json",
         type=Path,
@@ -77,7 +81,11 @@ def _discover_inputs(input_path: Path, glob_pattern: str) -> list[Path]:
     if input_path.is_file():
         return [input_path]
     if input_path.is_dir():
-        return sorted(input_path.glob(glob_pattern))
+        matches = sorted(input_path.glob(glob_pattern))
+        if glob_pattern == "*.e":
+            # Default discovery also includes Nicolet exports saved with a .eeg extension.
+            matches = sorted({*matches, *input_path.glob("*.eeg")})
+        return matches
     raise FileNotFoundError(f"Input path not found: {input_path}")
 
 

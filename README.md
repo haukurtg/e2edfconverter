@@ -17,6 +17,8 @@ You now have a `nicolet-e2edf` CLI on your PATH:
 ```
 nicolet-e2edf --in /path/to/case.e --out ./edf_drop
 nicolet-e2edf --in ./eeg_files --out ./edf_drop --glob "*.e"
+
+When you leave the default glob in place the converter will also try `.eeg` files in the folder—yes, that old-as-dust format—which usually works unless the file dates back to the EEG stone age.
 ```
 
 The CLI keeps only the dominant sampling-rate channels (mirrors FieldTrip), fakes anonymised IDs when you don’t give it patient metadata, and logs what it threw away. Want deterministic metadata? Point `--patient-json` at a file full of `{"glob": "Patient*.e", "PatientName": "..."}` blocks and it’ll do the substitutions.
