@@ -136,6 +136,7 @@ def convert_file(
         channel_labels,
         patient_meta,
         recording_start=nrv_header.startDateTime,
+        annotations=nrv_header.Events,
     )
     logger.info(
         "Converted %s → %s (%d channels @ %.2f Hz)",
