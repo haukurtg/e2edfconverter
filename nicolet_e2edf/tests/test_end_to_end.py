@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from nicolet_e2edf.nicolet import cli
-from nicolet_e2edf.nicolet.types import NervusHeader, SegmentInfo
+from nicolet_e2edf.nicolet.types import EventItem, NervusHeader, SegmentInfo
 
 
 def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -27,6 +27,19 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         )
     ]
     fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = [
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 1),
+            duration=2.0,
+            user="user",
+            GUID="{GUID}",
+            label="TestEvent",
+            IDStr="TestEvent",
+            annotation="note",
+        )
+    ]
 
     def _fake_read_header(path: Path):
         return {"Fs": 128.0}, fake_header
@@ -48,12 +61,13 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     assert edf_path.exists()
 
     content = edf_path.read_bytes()
-    header = content[:256 + 256]  # base + one signal
+    header = content[:256 + 256 * 2]  # base + two signals
     n_signals = int(header[252:256].decode("ascii").strip())
-    assert n_signals == 1
+    assert n_signals == 2
 
-    label_section = header[256 : 256 + 16]
-    assert label_section.decode("ascii").strip() == "C3"
+    label_section = header[256 : 256 + 32]
+    assert label_section[:16].decode("ascii").strip() == "C3"
+    assert label_section[16:32].decode("ascii").strip() == "EDF Annotations"
 
     samples_offset = 256
     samples_offset += 16 * n_signals  # labels
@@ -65,5 +79,16 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     samples_offset += 8 * n_signals  # digital max
     samples_offset += 80 * n_signals  # prefilter
     samples_section = header[samples_offset : samples_offset + 8 * n_signals]
-    samples_per_record = int(samples_section.decode("ascii").strip())
-    assert samples_per_record == 4
+    samples_counts = [
+        int(samples_section[i * 8 : (i + 1) * 8].decode("ascii").strip()) for i in range(n_signals)
+    ]
+    assert samples_counts[0] == 4
+
+    tal_bytes = (
+        "+1.000000".encode("ascii")
+        + b"\x152.000000"
+        + b"\x14"
+        + "TestEvent: note".encode("ascii")
+        + b"\x14\x00"
+    )
+    assert samples_counts[1] >= len(tal_bytes)
