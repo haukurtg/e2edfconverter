@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import json
 import numpy as np
 import pytest
 
@@ -92,3 +93,81 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         + b"\x14\x00"
     )
     assert samples_counts[1] >= len(tal_bytes)
+
+
+def test_resample_and_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["C3"],
+            refName=["REF"],
+            samplingRate=np.array([128.0]),
+            scale=np.ones(1),
+            sampleCount=np.array([4]),
+        )
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = [
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 1),
+            duration=2.0,
+            user="user",
+            GUID="{GUID}",
+            label="TestEvent",
+            IDStr="TestEvent",
+            annotation="note",
+        )
+    ]
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array([[0, 10, 20, 30]], dtype=np.float32)
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(
+        ["--in", str(recording), "--out", str(output_dir), "--json-sidecar", "--resample-to", "64"]
+    )
+    assert exit_code == 0
+
+    edf_path = output_dir / "case.edf"
+    sidecar_path = output_dir / "case.json"
+    assert edf_path.exists()
+    assert sidecar_path.exists()
+
+    content = edf_path.read_bytes()
+    header = content[:256 + 256 * 2]
+    samples_offset = 256
+    n_signals = int(header[252:256].decode("ascii").strip())
+    samples_offset += 16 * n_signals
+    samples_offset += 80 * n_signals
+    samples_offset += 8 * n_signals
+    samples_offset += 8 * n_signals
+    samples_offset += 8 * n_signals
+    samples_offset += 8 * n_signals
+    samples_offset += 8 * n_signals
+    samples_offset += 80 * n_signals
+    samples_section = header[samples_offset : samples_offset + 8 * n_signals]
+    samples_counts = [
+        int(samples_section[i * 8 : (i + 1) * 8].decode("ascii").strip()) for i in range(n_signals)
+    ]
+    assert samples_counts[0] == 2
+
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["sampling_rate_hz"] == 64
+    assert sidecar["sample_count"] == 2
+    assert sidecar["events"][0]["onset_seconds"] == 1.0
