@@ -21,7 +21,13 @@ nicolet-e2edf --in ./eeg_files --out ./edf_drop --glob "*.e"
 When you leave the default glob in place the converter will also try `.eeg` files in the folder—yes, that old-as-dust format—which usually works unless the file dates back to the EEG stone age.
 ```
 
-The CLI keeps only the dominant sampling-rate channels (mirrors FieldTrip), fakes anonymised IDs when you don’t give it patient metadata, and logs what it threw away. Want deterministic metadata? Point `--patient-json` at a file full of `{"glob": "Patient*.e", "PatientName": "..."}` blocks and it’ll do the substitutions. Need machine-learning labels or custom rates? Add `--json-sidecar` to emit an events/metadata `.json` next to the EDF, and pass `--resample-to 256` (for example) to resample everything before writing.
+### CLI options at a glance
+
+* `--glob`: alternative discovery pattern when the input path is a directory (default adds `.eeg`).
+* `--patient-json`: optional path to a JSON file with per-glob metadata overrides. Each object needs a `"glob"` key plus the EDF patient fields to override, e.g. `[{"glob": "Patient*.e", "PatientName": "Anon Subject"}]`.
+* `--json-sidecar`: emit a `<case>.json` alongside the EDF with channel labels, sample count, sampling rate, start time (when present), and events.
+* `--resample-to`: resample the output to a single sampling rate before writing.
+* `--verbose`: surface converter logging.
 
 ## Looking at the result
 
@@ -43,13 +49,22 @@ You’ll get a 0.5–35 Hz / 60 Hz notch, double-banana montage, 12‑second
 - `tools/view_with_mne.py` – quick peek straight from `.e` without converting, if you really need it.
 - `tests/` – unit + end-to-end tests with synthetic headers/data so CI doesn’t need real PHI.
 
+## Developing
+
+* Format and lint with Ruff/Black: `ruff check .` and `black --check .`
+* Run the full test suite: `pytest`
+
+Limitations to keep in mind while hacking: mixed sampling rates inside a single conversion are dropped (only the dominant rate is kept) and the EDF writer currently sticks to EDF+ annotations for events.
+
 ## Roadmap
 
-1. Ship de-identified `.e` fixtures and wire GitHub Actions (ruff, black --check, pytest).
-2. Handle mixed sampling rates in a less brutal way (resample or emit per-rate EDFs).
-3. Surface annotations/events either in EDF+ or a JSON sidecar so they don’t vanish.
+This converter already covers end-to-end `.e` → EDF (plus JSON sidecar) for modern cases. Remaining items are nice-to-haves rather than blockers:
 
-Reality check: currently validated on 500 Hz traces, drops off-rate channels, and still needs broader fixture coverage.
+1. Publish de-identified `.e` fixtures and wire GitHub Actions (ruff, black --check, pytest) against them.
+2. Offer gentler mixed-rate handling (e.g., optional resampling) as an alternative to today’s dominant-rate approach.
+3. Add usage examples that demonstrate metadata overrides and the existing sidecar/event handling.
+
+Reality check: validated on 500 Hz traces, keeps dominant-rate channels when rates diverge, and awaits broader fixture coverage to lock in regression tests.
 
 ## Attribution
 
