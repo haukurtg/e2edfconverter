@@ -6,6 +6,7 @@ nicolet_e2edf/nicolet/cli.py
 nicolet_e2edf/nicolet/data.py
 nicolet_e2edf/nicolet/edf_writer.py
 nicolet_e2edf/nicolet/header.py
+nicolet_e2edf/nicolet/tui.py
 nicolet_e2edf/nicolet/types.py
 nicolet_e2edf/nicolet_e2edf.egg-info/PKG-INFO
 nicolet_e2edf/nicolet_e2edf.egg-info/SOURCES.txt

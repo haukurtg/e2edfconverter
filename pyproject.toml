@@ -27,6 +27,9 @@ dev = [
     "black>=24.8",
     "mypy>=1.11"
 ]
+tui = [
+    "rich>=13.7"
+]
 
 [project.scripts]
 nicolet-e2edf = "nicolet.cli:main"

@@ -4,16 +4,15 @@ import argparse
 from collections.abc import Iterable
 from datetime import timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from nicolet_e2edf.nicolet.data import read_nervus_data
 from nicolet_e2edf.nicolet.header import read_nervus_header
 
-try:
+if TYPE_CHECKING:  # pragma: no cover
     import mne
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Install 'mne' to use this viewer (pip install mne)") from exc
 
 
 def _clean_label(label: str) -> str:
@@ -23,6 +22,8 @@ def _clean_label(label: str) -> str:
 
 
 def _build_annotations(nrv_header, fs: float) -> mne.Annotations | None:
+    import mne
+
     if not nrv_header.Events or not nrv_header.startDateTime:
         return None
     onsets = []
@@ -42,7 +43,12 @@ def _build_annotations(nrv_header, fs: float) -> mne.Annotations | None:
     return mne.Annotations(onsets, durations, descriptions)
 
 
-def launch_viewer(path: Path, start: float, duration: float, channels: Iterable[int] | None) -> None:
+def launch_viewer(path: Path, start: float, duration: float, channels: Iterable[int] | None, notch: float) -> None:
+    try:
+        import mne
+    except ImportError as exc:  # pragma: no cover
+        raise SystemExit("Install 'mne' to use this viewer (e.g. `python -m pip install mne`)") from exc
+
     public_header, nrv_header = read_nervus_header(path)
     fs = public_header["Fs"] or nrv_header.targetSamplingRate
     if not fs:
@@ -74,6 +80,8 @@ def launch_viewer(path: Path, start: float, duration: float, channels: Iterable[
     if annotations is not None:
         raw.set_annotations(annotations)
 
+    if notch and notch > 0:
+        raw.notch_filter(float(notch), verbose=False)
     raw.plot(start=start, duration=duration if duration > 0 else 10.0, block=True)
 
 
@@ -82,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("path", type=Path, help="Path to Nicolet .e file")
     parser.add_argument("--start", type=float, default=0.0, help="Start time in seconds")
     parser.add_argument("--duration", type=float, default=10.0, help="Duration to load (seconds; 0 = to end)")
+    parser.add_argument(
+        "--notch",
+        type=float,
+        default=50.0,
+        help="Notch filter frequency in Hz (default: %(default)s; set 0 to disable)",
+    )
     parser.add_argument(
         "--channels",
         type=int,
@@ -94,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    launch_viewer(args.path, args.start, args.duration, args.channels)
+    launch_viewer(args.path, args.start, args.duration, args.channels, args.notch)
 
 
 if __name__ == "__main__":  # pragma: no cover

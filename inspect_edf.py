@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import mne
+if TYPE_CHECKING:  # pragma: no cover
+    import mne
 
 DOUBLE_BANANA_PAIRS = [
     # Left longitudinal chain
@@ -36,6 +38,8 @@ DOUBLE_BANANA_PAIRS = [
 
 
 def _build_double_banana(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
+    import mne
+
     available = set(ch.upper() for ch in raw.ch_names)
     pairs = [(a, b) for a, b in DOUBLE_BANANA_PAIRS if a.upper() in available and b.upper() in available]
     if not pairs:
@@ -86,7 +90,30 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         help="Optional PNG file to save the montage (useful on headless systems)",
     )
+    parser.add_argument(
+        "--notch",
+        type=float,
+        default=50.0,
+        help="Notch filter frequency in Hz (default: %(default)s; set 0 to disable)",
+    )
+    parser.add_argument(
+        "--lowcut",
+        type=float,
+        default=0.5,
+        help="High-pass filter cutoff in Hz (default: %(default)s; set 0 to disable)",
+    )
+    parser.add_argument(
+        "--highcut",
+        type=float,
+        default=35.0,
+        help="Low-pass filter cutoff in Hz (default: %(default)s; set 0 to disable)",
+    )
     args = parser.parse_args(argv)
+
+    try:
+        import mne
+    except ImportError as exc:
+        raise SystemExit("Install 'mne' to use this viewer (e.g. `python -m pip install mne`)") from exc
 
     edf_path = Path(args.edf_path)
     if not edf_path.exists():
@@ -101,8 +128,15 @@ def main(argv: list[str] | None = None) -> None:
     except RuntimeError:
         pass
 
-    eeg.filter(0.5, 35.0, fir_design="firwin", verbose=False)
-    eeg.notch_filter(60.0, verbose=False)
+    # Apply bandpass filter with configurable cutoffs
+    # Use None for disabled bounds (0 means disable)
+    low = args.lowcut if args.lowcut and args.lowcut > 0 else None
+    high = args.highcut if args.highcut and args.highcut > 0 else None
+    if low is not None or high is not None:
+        eeg.filter(low, high, fir_design="firwin", verbose=False)
+
+    if args.notch and args.notch > 0:
+        eeg.notch_filter(float(args.notch), verbose=False)
 
     montage_view = _build_double_banana(eeg)
 
