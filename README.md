@@ -145,22 +145,7 @@ At the repo root:
 - `nicolet_e2edf/tools/view_with_mne.py` – quick peek straight from `.e` without converting.
 - `nicolet_e2edf/tests/` – unit + end-to-end tests with synthetic headers/data so CI doesn't need real PHI.
 
-## Developing
-
-* Format and lint with Ruff/Black: `ruff check .` and `black --check .`
-* Run the full test suite: `pytest`
-
 Limitations to keep in mind while hacking: mixed sampling rates inside a single conversion are dropped (only the dominant rate is kept) and the EDF writer currently sticks to EDF+ annotations for events.
-
-## Roadmap
-
-This converter already covers end-to-end `.e` → EDF (plus JSON sidecar) for modern cases. Remaining items are nice-to-haves rather than blockers:
-
-1. Publish de-identified `.e` fixtures and wire GitHub Actions (ruff, black --check, pytest) against them.
-2. ~~Offer gentler mixed-rate handling (e.g., optional resampling)~~ — **Done**: use `--resample-to` to unify all channels to a single rate.
-3. Add usage examples that demonstrate metadata overrides and the existing sidecar/event handling.
-
-Reality check: validated on 500 Hz traces, keeps dominant-rate channels when rates diverge, and awaits broader fixture coverage to lock in regression tests.
 
 ## Attribution
 
