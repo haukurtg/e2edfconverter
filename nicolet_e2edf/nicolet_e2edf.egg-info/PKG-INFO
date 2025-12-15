@@ -697,7 +697,7 @@ Dynamic: license-file
 
 I have not found a native Python way to pry Nicolet/Nervus `.e` files out of their vendor bubble and into something sane like EDF. So this repo is a small collection of scripts that read modern `.e` studies and spit out EDF you can actually feed to MNE, EEGLAB, or whatever analysis rabbit hole you’re in.
 
-No vendor DLLs, no MATLAB runtime, just Python 3.10+ and NumPy.
+No vendor DLLs, no MATLAB runtime, just Python 3.10+ and NumPy. Optional scipy for bandpass/notch filtering.
 
 ## Prerequisites
 
@@ -753,6 +753,8 @@ nicolet-e2edf --in EEG_test_files/eeg_files/**/*.e --out ./edf_drop
 
 Launch the wizard-style terminal UI (menus/prompts + animated progress):
 
+![TUI Screenshot](docs/tui_screenshot.png)
+
 ```
 uv run --isolated --python 3.11 --with rich nicolet-e2edf --ui
 
@@ -780,6 +782,7 @@ When converting a folder, the converter mirrors the input folder structure under
 * `--highcut`: optional low-pass filter cutoff in Hz (e.g. `--highcut 35`). Requires scipy.
 * `--notch`: optional notch filter in Hz to remove powerline interference (e.g. `--notch 50` or `--notch 60`). Requires scipy.
 * `--verbose`: surface converter logging.
+* `--ui`: launch the interactive terminal wizard (requires `rich`).
 
 **Filter examples:**
 
@@ -815,15 +818,21 @@ uv pip install -p .venv mne
 
 By default you'll get a 0.5–35 Hz bandpass, 50 Hz notch, double-banana montage, 12-second window, and 100 µV/cm scaling—basically what the neurologist on call expects. Adjust `--lowcut` and `--highcut` to change the filter bounds (set to 0 to disable). On a headless box, pass `--snapshot out.png` and it will quietly save the figure instead of trying (and failing) to pop a window.
 
-## What’s actually in here
+## What's actually in here
 
-- `nicolet/header.py` – the clean-room reinterpretation of FieldTrip’s header reader, mapping GUIDs, segments, events.
-- `nicolet/data.py` – sequential waveform reader that hands you µV traces for chosen channels/ranges.
-- `nicolet/edf_writer.py` – minimal EDF+ writer, nothing fancy, just correct scaling and timestamps.
-- `nicolet/cli.py` – the `nicolet-e2edf` entry point with batch support + metadata rules.
-- `inspect_edf.py` – the helper described above.
-- `tools/view_with_mne.py` – quick peek straight from `.e` without converting, if you really need it.
-- `tests/` – unit + end-to-end tests with synthetic headers/data so CI doesn’t need real PHI.
+Inside `nicolet_e2edf/nicolet/`:
+
+- `header.py` – the clean-room reinterpretation of FieldTrip's header reader, mapping GUIDs, segments, events.
+- `data.py` – sequential waveform reader that hands you µV traces for chosen channels/ranges.
+- `edf_writer.py` – minimal EDF+ writer, nothing fancy, just correct scaling and timestamps.
+- `cli.py` – the `nicolet-e2edf` entry point with batch support, filtering, resampling, and metadata rules.
+- `tui.py` – the interactive terminal wizard and animated progress UI.
+
+At the repo root:
+
+- `inspect_edf.py` – MNE-based EDF viewer with double-banana montage and configurable filters.
+- `nicolet_e2edf/tools/view_with_mne.py` – quick peek straight from `.e` without converting.
+- `nicolet_e2edf/tests/` – unit + end-to-end tests with synthetic headers/data so CI doesn't need real PHI.
 
 ## Developing
 
@@ -837,7 +846,7 @@ Limitations to keep in mind while hacking: mixed sampling rates inside a single 
 This converter already covers end-to-end `.e` → EDF (plus JSON sidecar) for modern cases. Remaining items are nice-to-haves rather than blockers:
 
 1. Publish de-identified `.e` fixtures and wire GitHub Actions (ruff, black --check, pytest) against them.
-2. Offer gentler mixed-rate handling (e.g., optional resampling) as an alternative to today’s dominant-rate approach.
+2. ~~Offer gentler mixed-rate handling (e.g., optional resampling)~~ — **Done**: use `--resample-to` to unify all channels to a single rate.
 3. Add usage examples that demonstrate metadata overrides and the existing sidecar/event handling.
 
 Reality check: validated on 500 Hz traces, keeps dominant-rate channels when rates diverge, and awaits broader fixture coverage to lock in regression tests.

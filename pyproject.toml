@@ -30,6 +30,9 @@ dev = [
 tui = [
     "rich>=13.7"
 ]
+filter = [
+    "scipy>=1.11"
+]
 
 [project.scripts]
 nicolet-e2edf = "nicolet.cli:main"
