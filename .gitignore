@@ -3,8 +3,10 @@
 *.pyc
 __pycache__/
 out_edf*/
+edf_drop/
 *.edf
 *.png
 !docs/*.png
 EEG_Files/
+EEG_test_files/
 
