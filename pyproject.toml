@@ -35,13 +35,13 @@ filter = [
 ]
 
 [project.scripts]
-nicolet-e2edf = "nicolet.cli:main"
+nicolet-e2edf = "nicolet_e2edf.nicolet.cli:main"
 
 [tool.setuptools]
 license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
-where = ["nicolet_e2edf"]
+where = ["."]
 
 [tool.black]
 target-version = ["py310"]
