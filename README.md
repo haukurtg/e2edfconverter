@@ -1,5 +1,7 @@
 # Nicolet `.e` → EDF
 
+![Logo](docs/logo.png)
+
 I have not found a native Python way to pry Nicolet/Nervus `.e` files out of their vendor bubble and into something sane like EDF. So this repo is a small collection of scripts that read modern `.e` studies and spit out EDF you can actually feed to MNE, EEGLAB, or whatever analysis rabbit hole you’re in.
 
 No vendor DLLs, no MATLAB runtime, just Python 3.10+ and NumPy. Optional scipy for bandpass/notch filtering.
