@@ -14,6 +14,19 @@ def rich_available() -> bool:
     return importlib.util.find_spec("rich") is not None
 
 
+def mne_available() -> bool:
+    """Check if MNE is available in the current environment."""
+    return importlib.util.find_spec("mne") is not None
+
+
+def _build_uv_command(script_path: Path, *args: str) -> list[str]:
+    """
+    Build a uv run command that works whether we're already in a uv environment or not.
+    Uses --isolated --with mne to install MNE in an isolated, non-persistent environment.
+    """
+    return ["uv", "run", "--isolated", "--with", "mne", "python", str(script_path)] + list(args)
+
+
 def _arrow_menu_select(title: str, options: list[str], *, default_index: int = 0) -> int | None:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return None
@@ -443,17 +456,19 @@ def browse_results(*, outputs: list[Path], title: str = "nicolet-e2edf") -> None
         notch_choice = Prompt.ask("Notch filter (Hz)", choices=["50", "60", "0"], default="50")
         notch = float(notch_choice)
         console.print(Panel(f"Creating snapshot: {out_png}", border_style="blue"))
+        
+        # Check if MNE is available, if not use uv run --with mne (isolated, non-persistent)
+        if mne_available():
+            # MNE is available, run normally
+            cmd = [sys.executable, str(inspect_script), str(edf_path), "--snapshot", str(out_png), "--notch", str(notch)]
+        else:
+            # MNE not available, use uv run --with mne (creates new isolated environment, non-persistent)
+            # This works even when already running under uv run --isolated
+            cmd = _build_uv_command(inspect_script, str(edf_path), "--snapshot", str(out_png), "--notch", str(notch))
+        
         try:
             subprocess.run(  # noqa: S603
-                [
-                    sys.executable,
-                    str(inspect_script),
-                    str(edf_path),
-                    "--snapshot",
-                    str(out_png),
-                    "--notch",
-                    str(notch),
-                ],
+                cmd,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -461,6 +476,16 @@ def browse_results(*, outputs: list[Path], title: str = "nicolet-e2edf") -> None
             )
         except subprocess.CalledProcessError as exc:
             console.print(Panel(f"Snapshot failed:\n{exc.stdout}", border_style="red"))
+            pause()
+            return
+        except FileNotFoundError:
+            console.print(
+                Panel(
+                    "MNE not found and 'uv' command not available.\n"
+                    "Install MNE with: uv run --with mne python inspect_edf.py ...",
+                    border_style="red",
+                )
+            )
             pause()
             return
         console.print(Panel(f"Saved snapshot: {out_png}", border_style="green"))
@@ -477,10 +502,31 @@ def browse_results(*, outputs: list[Path], title: str = "nicolet-e2edf") -> None
         notch_choice = Prompt.ask("Notch filter (Hz)", choices=["50", "60", "0"], default="50")
         notch = float(notch_choice)
         console.print(Panel("Launching MNE viewer (close the window to return)…", border_style="blue"))
-        subprocess.run(  # noqa: S603
-            [sys.executable, str(inspect_script), str(edf_path), "--notch", str(notch)],
-            check=False,
-        )
+        
+        # Check if MNE is available, if not use uv run --with mne (isolated, non-persistent)
+        if mne_available():
+            # MNE is available, run normally
+            cmd = [sys.executable, str(inspect_script), str(edf_path), "--notch", str(notch)]
+        else:
+            # MNE not available, use uv run --with mne (creates new isolated environment, non-persistent)
+            # This works even when already running under uv run --isolated
+            cmd = _build_uv_command(inspect_script, str(edf_path), "--notch", str(notch))
+        
+        try:
+            subprocess.run(  # noqa: S603
+                cmd,
+                check=False,
+            )
+        except FileNotFoundError:
+            console.print(
+                Panel(
+                    "MNE not found and 'uv' command not available.\n"
+                    "Install MNE with: uv run --with mne python inspect_edf.py ...",
+                    border_style="red",
+                )
+            )
+            pause()
+            return
         pause("Press Enter to return to the browser")
 
     show_outputs()

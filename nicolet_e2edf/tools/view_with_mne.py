@@ -47,7 +47,11 @@ def launch_viewer(path: Path, start: float, duration: float, channels: Iterable[
     try:
         import mne
     except ImportError as exc:  # pragma: no cover
-        raise SystemExit("Install 'mne' to use this viewer (e.g. `python -m pip install mne`)") from exc
+        raise SystemExit(
+            "Install 'mne' to use this viewer.\n"
+            "Recommended: uv run --with mne ...\n"
+            "Or install manually: uv sync --with viewer"
+        ) from exc
 
     public_header, nrv_header = read_nervus_header(path)
     fs = public_header["Fs"] or nrv_header.targetSamplingRate

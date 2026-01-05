@@ -113,7 +113,11 @@ def main(argv: list[str] | None = None) -> None:
     try:
         import mne
     except ImportError as exc:
-        raise SystemExit("Install 'mne' to use this viewer (e.g. `python -m pip install mne`)") from exc
+        raise SystemExit(
+            "Install 'mne' to use this viewer.\n"
+            "Recommended: uv run --with mne python inspect_edf.py ...\n"
+            "Or install manually: uv sync --with viewer"
+        ) from exc
 
     edf_path = Path(args.edf_path)
     if not edf_path.exists():

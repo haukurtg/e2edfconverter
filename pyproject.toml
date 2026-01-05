@@ -33,6 +33,9 @@ tui = [
 filter = [
     "scipy>=1.11"
 ]
+viewer = [
+    "mne>=1.0"
+]
 
 [project.scripts]
 nicolet-e2edf = "nicolet_e2edf.nicolet.cli:main"

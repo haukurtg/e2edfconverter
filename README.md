@@ -63,6 +63,8 @@ There's a bundled viewer script that shows your EDF in a double-banana montage:
 uv run --isolated --with mne python inspect_edf.py ./edf_output/Patient1.edf
 ```
 
+**Note:** When using the interactive TUI (`--ui`), the viewer is automatically launched with MNE in an isolated environment if needed. No manual installation required!
+
 Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless systems).
 
 ## Limitations
