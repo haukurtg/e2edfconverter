@@ -530,6 +530,15 @@ def _read_events(
     static_packets: list[StaticPacket],
     main_index: list[MainIndexEntry],
 ) -> list[EventItem]:
+    """Read events from the Events section.
+    
+    Each event is stored in its own packet with structure:
+    - 16 bytes: packet GUID (must match _EVENT_PACKET_GUID)
+    - 8 bytes: packet length
+    - 240 bytes: event marker data
+    
+    Events are read sequentially until a non-matching GUID is found.
+    """
     event_packet = _lookup_static(static_packets, tag="Events")
     if event_packet is None:
         return []
@@ -538,33 +547,66 @@ def _read_events(
         return []
 
     events: list[EventItem] = []
+    
+    # Start at the first event section
     for entry in index_entries:
-        handle.seek(entry.offset, 0)
-        guid = _read_exact(handle, 16)
-        packet_length = _read_u64(handle)
-        if guid != _EVENT_PACKET_GUID:
-            continue
-        packet_start = handle.tell()
-        while handle.tell() - packet_start < packet_length:
-            marker_start = handle.tell()
+        offset = entry.offset
+        section_end = entry.offset + entry.sectionL
+        
+        # Read packets sequentially until we hit a non-event GUID or section end
+        while offset < section_end:
+            handle.seek(offset, 0)
+            
+            # Read packet header: GUID (16 bytes) + length (8 bytes)
+            guid = _read_exact(handle, 16)
+            packet_length = _read_u64(handle)
+            
+            # Stop if this is not an event packet
+            if guid != _EVENT_PACKET_GUID:
+                break
+            
+            # Read ONE event from this packet
+            # Skip eventID (8 bytes, not used)
             handle.seek(8, 1)
+            
             date_ole = _read_double(handle)
             date_fraction = _read_double(handle)
             duration = _read_double(handle)
+            
+            # Skip 48 bytes reserved
             handle.seek(48, 1)
+            
+            # User (12 UTF-16 chars = 24 bytes)
             user_raw = _read_exact(handle, 12 * 2)
             user = user_raw.decode("utf-16le", errors="ignore").rstrip("\x00 ")
+            
+            # Text length for annotations
             text_len = _read_u64(handle)
+            
+            # Event type GUID
             _guid_compact, guid_pretty = _mixed_endian_guid(_read_exact(handle, 16))
+            
+            # Skip Reserved4 (16 bytes)
             handle.seek(16, 1)
+            
+            # Label (32 UTF-16 chars = 64 bytes)
             label = _read_exact(handle, 32 * 2).decode("utf-16le", errors="ignore").rstrip("\x00 ")
+            
+            # Read annotation if this is an annotation event
             annotation = None
-            if guid_pretty == "{A5A95612-A7F8-11CF-831A-0800091B5BDA}":
+            if guid_pretty == "{A5A95612-A7F8-11CF-831A-0800091B5BDA}" and text_len > 0:
+                # Skip Reserved5 (32 bytes)
                 handle.seek(32, 1)
                 annotation_raw = _read_exact(handle, int(text_len) * 2)
-                annotation = annotation_raw.decode("utf-16le", errors="ignore").rstrip("\x00 ")
+                decoded = annotation_raw.decode("utf-16le", errors="ignore")
+                # Clean: take text up to first null character (rest is buffer garbage)
+                if "\x00" in decoded:
+                    decoded = decoded.split("\x00")[0]
+                annotation = decoded.strip()
+            
             label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
             event_time = _ole_to_datetime(date_ole + date_fraction / DAY_SECONDS)
+            
             events.append(
                 EventItem(
                     dateOLE=date_ole,
@@ -578,10 +620,10 @@ def _read_events(
                     annotation=annotation,
                 )
             )
-            consumed = handle.tell() - marker_start
-            to_skip = 240 - consumed
-            if to_skip > 0:
-                handle.seek(to_skip, 1)
+            
+            # Move to next packet (offset + packet_length)
+            offset = offset + packet_length
+    
     return events
 
 

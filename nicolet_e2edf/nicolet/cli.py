@@ -321,6 +321,59 @@ def _notch_filter(
     return filtered
 
 
+def _categorize_channel(label: str) -> str:
+    """Categorize a channel label into a type based on naming conventions."""
+    label_upper = label.upper().strip()
+    
+    # EOG (electrooculogram) channels
+    if label_upper in ("ROC", "LOC", "EOG", "HEOG", "VEOG", "LEOG", "REOG"):
+        return "EOG"
+    
+    # EKG/ECG (electrocardiogram) channels
+    if label_upper in ("EKG", "ECG"):
+        return "EKG"
+    
+    # Stimulus/trigger channels
+    if label_upper in ("PHOTIC", "STIM", "TRIGGER", "TRIG"):
+        return "Stimulus"
+    
+    # Reference channels (ear references, not midline EEG)
+    if label_upper in ("A1", "A2", "REF", "REFERENCE", "GROUND", "GND"):
+        return "Reference"
+    
+    # Standard 10-20 EEG electrode positions
+    # Pattern: Letter(s) + optional number + optional letter (including midline Z)
+    eeg_patterns = ["FP", "F", "C", "P", "O", "T"]
+    if any(label_upper.startswith(prefix) for prefix in eeg_patterns):
+        # Check if it's a valid EEG position (has a number or is a midline Z)
+        if any(char.isdigit() for char in label_upper) or label_upper.endswith("Z"):
+            return "EEG"
+    
+    # If we can't categorize it, it's "Other"
+    return "Other"
+
+
+def _build_channels_list(channel_labels: list[str]) -> list[dict[str, object]]:
+    """Build a flat list of channels with type info for easy DataFrame conversion."""
+    channels = []
+    for idx, label in enumerate(channel_labels):
+        channels.append({
+            "index": idx,
+            "name": label,
+            "type": _categorize_channel(label),
+        })
+    return channels
+
+
+def _count_channels_by_type(channel_labels: list[str]) -> dict[str, int]:
+    """Count channels by type for flat access."""
+    counts: dict[str, int] = {}
+    for label in channel_labels:
+        ch_type = _categorize_channel(label)
+        counts[ch_type] = counts.get(ch_type, 0) + 1
+    return counts
+
+
 def _write_json_sidecar(
     output_path: Path,
     *,
@@ -330,35 +383,95 @@ def _write_json_sidecar(
     sample_count: int,
     start_time,
     events,
+    nrv_header,
 ) -> None:
+    """Write ML-friendly JSON sidecar with recording metadata.
+    
+    Structure is optimized for machine learning pipelines:
+    - Flat top-level fields for easy filtering/indexing
+    - Channels as list of {index, name, type} for DataFrame conversion
+    - Events separated into annotations vs system events
+    - All times in seconds relative to recording start
+    """
     start_iso = start_time.isoformat() if start_time else None
-    event_payload = []
+    
+    # Calculate duration
+    duration_seconds = sample_count / sampling_rate if sampling_rate > 0 else None
+    
+    # Build channel type counts (flat, for easy filtering)
+    type_counts = _count_channels_by_type(channel_labels)
+    
+    # Process events - separate annotations from system events
+    annotations = []
+    system_events = []
+    
     if events:
         for event in events:
             onset = None
             if start_time and event.date:
                 onset = (event.date - start_time).total_seconds()
-            event_payload.append(
-                {
-                    "label": event.label,
-                    "annotation": event.annotation,
-                    "user": event.user,
-                    "guid": event.GUID,
-                    "id": event.IDStr,
+            
+            label = event.label.strip() if event.label else None
+            
+            # Separate annotations (with text) from system events
+            if event.annotation:
+                clean_text = event.annotation.strip()
+                if clean_text:
+                    annotations.append({
+                        "onset_seconds": onset,
+                        "duration_seconds": event.duration if event.duration else None,
+                        "text": clean_text,
+                    })
+            else:
+                # Skip noisy events: UNKNOWN type with placeholder label "-" or no label
+                # These are typically review/selection markers without clinical value
+                if event.IDStr == "UNKNOWN" and (label == "-" or label is None):
+                    continue
+                
+                # For meaningful system events, don't include user (reduces noise)
+                system_events.append({
                     "onset_seconds": onset,
                     "duration_seconds": event.duration if event.duration else None,
-                }
-            )
-
+                    "type": event.IDStr,
+                    "label": label if label != "-" else None,
+                })
+    
+    # Build the payload with ML-friendly structure
     payload = {
+        # ===== Recording identification =====
         "source_file": source_path.name,
         "edf_file": output_path.name,
+        
+        # ===== Signal properties (flat, for filtering) =====
         "sampling_rate_hz": sampling_rate,
         "sample_count": sample_count,
-        "channel_labels": channel_labels,
+        "duration_seconds": duration_seconds,
         "start_time": start_iso,
-        "events": event_payload,
+        
+        # ===== Channel summary (flat counts for easy filtering) =====
+        "channel_count": len(channel_labels),
+        "eeg_channel_count": type_counts.get("EEG", 0),
+        "eog_channel_count": type_counts.get("EOG", 0),
+        "ekg_channel_count": type_counts.get("EKG", 0),
+        "other_channel_count": type_counts.get("Other", 0) + type_counts.get("Reference", 0) + type_counts.get("Stimulus", 0),
+        
+        # ===== Channels list (for DataFrame: pd.DataFrame(data["channels"])) =====
+        "channels": _build_channels_list(channel_labels),
+        
+        # ===== Recording metadata =====
+        "reference": nrv_header.reference,
+        "n_segments": len(nrv_header.Segments) if nrv_header.Segments else 0,
+        "excluded_channels": nrv_header.excludedChannels if nrv_header.excludedChannels else [],
+        
+        # ===== Clinical annotations (for NLP/labeling) =====
+        "annotations": annotations,
+        "annotation_count": len(annotations),
+        
+        # ===== System events (for QC/preprocessing) =====
+        "events": system_events,
+        "event_count": len(system_events),
     }
+    
     sidecar_path = output_path.with_suffix(".json")
     sidecar_path.write_text(json.dumps(payload, indent=2))
 
@@ -437,6 +550,7 @@ def convert_file(
             sample_count=waveform.shape[0],
             start_time=nrv_header.startDateTime,
             events=nrv_header.Events,
+            nrv_header=nrv_header,
         )
     logger.info(
         "Converted %s → %s (%d channels @ %.2f Hz)",
