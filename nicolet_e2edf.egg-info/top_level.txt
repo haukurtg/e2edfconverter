@@ -1,4 +1,0 @@
-EEG_test_files
-docs
-edf_drop
-nicolet_e2edf

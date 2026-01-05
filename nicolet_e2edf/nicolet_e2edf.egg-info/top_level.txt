@@ -1,3 +1,0 @@
-nicolet
-tests
-tools
