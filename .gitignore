@@ -8,3 +8,4 @@ out_edf*/
 *.png
 !docs/*.png
 EEG_Files/
+EEG_test_files/
