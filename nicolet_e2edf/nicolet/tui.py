@@ -419,15 +419,53 @@ def browse_results(*, outputs: list[Path], title: str = "nicolet-e2edf") -> None
             return outputs[idx - 1]
         return None
 
+    def select_file_with_json() -> Path | None:
+        """Select an EDF file that has a corresponding JSON sidecar. Shows JSON filenames in menu."""
+        files_with_json = [p for p in outputs if p.with_suffix(".json").exists()]
+        if not files_with_json:
+            console.print(Panel("No files with JSON sidecars found.", border_style="yellow"))
+            pause()
+            return None
+        # Show JSON filenames in the menu for clarity
+        json_paths = [p.with_suffix(".json") for p in files_with_json]
+        names = [str(json_path) for json_path in json_paths]
+        chosen = _select_from_menu("Select JSON file to view", names)
+        if chosen is not None:
+            # Return the corresponding EDF file path
+            return files_with_json[chosen]
+        raw = Prompt.ask("Pick file number", default="1")
+        try:
+            idx = int(raw)
+        except ValueError:
+            return None
+        if 1 <= idx <= len(files_with_json):
+            return files_with_json[idx - 1]
+        return None
+
     def view_json(edf_path: Path) -> None:
+        """View the JSON sidecar for an EDF file. Assumes the sidecar exists (filtered by select_file_with_json)."""
+        import json
+        
         sidecar = edf_path.with_suffix(".json")
+        # Double-check exists (defensive programming, though select_file_with_json should filter)
         if not sidecar.exists():
-            console.print(Panel(f"No sidecar found: {sidecar}", border_style="yellow"))
+            console.print(Panel(f"JSON sidecar not found: {sidecar}\nThis shouldn't happen - please report this bug.", border_style="red"))
             pause()
             return
-        text = sidecar.read_text(encoding="utf-8", errors="replace")
-        with console.pager(styles=True):
-            console.print(Panel(Syntax(text, "json", word_wrap=True), title=str(sidecar), border_style="cyan"))
+        
+        # Read and parse JSON to format it nicely
+        try:
+            json_data = json.loads(sidecar.read_text(encoding="utf-8", errors="replace"))
+            # Format JSON with indentation for readability
+            formatted_json = json.dumps(json_data, indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            # If JSON is invalid, just show raw text
+            formatted_json = sidecar.read_text(encoding="utf-8", errors="replace")
+        
+        # Display JSON with syntax highlighting, but without pager to avoid ANSI code issues
+        # The pager doesn't handle Rich's Syntax markup well, so we display directly
+        syntax = Syntax(formatted_json, "json", word_wrap=True, theme="monokai")
+        console.print(Panel(syntax, title=str(sidecar), border_style="cyan"))
         pause()
 
     def view_edf_summary(edf_path: Path) -> None:
@@ -556,7 +594,7 @@ def browse_results(*, outputs: list[Path], title: str = "nicolet-e2edf") -> None
             show_outputs()
             pause()
         elif choice == 1:
-            selected = select_file()
+            selected = select_file_with_json()
             if selected:
                 view_json(selected)
         elif choice == 2:
