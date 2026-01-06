@@ -25,7 +25,8 @@ dev = [
     "hypothesis>=6.112",
     "ruff>=0.6",
     "black>=24.8",
-    "mypy>=1.11"
+    "mypy>=1.11",
+    "pyedflib>=0.1.37"
 ]
 tui = [
     "rich>=13.7"

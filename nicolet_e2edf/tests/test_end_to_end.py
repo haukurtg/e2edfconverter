@@ -85,14 +85,21 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     ]
     assert samples_counts[0] == 4
 
-    tal_bytes = (
+    # TAL format: time-keeper TAL (+0\x14\x14\x00) + event TAL
+    # Event TAL: +1.000000\x152.000000\x14TestEvent: note\x14\x00
+    # TAL bytes are packed 2 per int16 sample, so we need (byte_count + 1) // 2 samples
+    # The annotation signal stores raw TAL bytes, not one byte per sample
+    time_keeper = b"+0\x14\x14\x00"
+    event_tal = (
         "+1.000000".encode("ascii")
         + b"\x152.000000"
         + b"\x14"
         + "TestEvent: note".encode("ascii")
         + b"\x14\x00"
     )
-    assert samples_counts[1] >= len(tal_bytes)
+    total_tal_bytes = len(time_keeper) + len(event_tal)
+    expected_samples = (total_tal_bytes + 1) // 2  # ceiling division
+    assert samples_counts[1] >= expected_samples
 
 
 def test_resample_and_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -170,7 +177,8 @@ def test_resample_and_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     sidecar = json.loads(sidecar_path.read_text())
     assert sidecar["sampling_rate_hz"] == 64
     assert sidecar["sample_count"] == 2
-    assert sidecar["events"][0]["onset_seconds"] == 1.0
+    # Events with annotation text go to "annotations" list, not "events"
+    assert sidecar["annotations"][0]["onset_seconds"] == 1.0
 
 
 def test_directory_input_preserves_subfolders_and_avoids_collisions(
