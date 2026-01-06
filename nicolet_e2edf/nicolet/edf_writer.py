@@ -138,76 +138,131 @@ def _channel_label(name: str, index: int) -> str:
     return cleaned[:16]
 
 
-def _format_annotation_events(
-    events: Sequence[EventItem] | None,
-    recording_start: datetime,
-) -> tuple[np.ndarray, int]:
-    """Return EDF+ annotation signal and samples-per-record for the channel.
+def _format_time_keeper_tal(record_start_time: float) -> bytes:
+    """Format the time-keeping TAL for a data record.
+    
+    EDF+ requires each data record to start with a time-keeping TAL.
+    Format: +<onset>\x14\x14\x00 (onset with empty annotation)
+    """
+    # Format onset with sign (+ or -) as required by EDF+
+    # Use minimal precision to save space
+    if record_start_time == int(record_start_time):
+        onset = f"+{int(record_start_time)}"
+    else:
+        onset = f"+{record_start_time:.6f}".rstrip('0').rstrip('.')
+    return f"{onset}\x14\x14\x00".encode("ascii")
 
-    The returned array contains the EDF+ Time-Annotation Lists (TALs) encoded
-    as raw bytes within int16 samples. Per EDF+ spec section 2.2.4:
-    - Each data record MUST start with a time-keeping TAL: +<onset>\x14\x14\x00
-    - This TAL has no annotations, just the time stamp for the data record
-    - Additional TALs with annotations follow after the time-keeper
+
+def _format_event_tal(event: EventItem, recording_start: datetime) -> bytes:
+    """Format a single event as a TAL."""
+    onset_seconds = (event.date - recording_start).total_seconds()
+    # Format onset with sign (+ or -) as required by EDF+
+    onset = f"{onset_seconds:+.6f}"
+    
+    # Duration is optional, format: \x15<duration>
+    duration = ""
+    if event.duration is not None and event.duration > 0:
+        duration = f"\x15{event.duration:.6f}"
+    
+    # Build annotation text
+    description_parts = []
+    if event.label:
+        description_parts.append(event.label)
+    if event.annotation:
+        description_parts.append(event.annotation)
+    elif event.IDStr and not description_parts:
+        description_parts.append(event.IDStr)
+    text = ": ".join(part for part in description_parts if part) or "Event"
+    
+    # TAL format: <onset><duration>\x14<annotation>\x14\x00
+    return f"{onset}{duration}\x14{text}\x14\x00".encode("ascii", "ignore")
+
+
+def _build_annotation_signal(tal_bytes: bytes, annotation_samples: int) -> np.ndarray:
+    """Build the annotation signal array from TAL bytes.
     
     The TAL bytes are stored directly as raw bytes within int16 samples.
     Each int16 sample holds 2 bytes of TAL data (or zero-padding).
     """
-    tal_segments: list[bytes] = []
+    # Pad to even length for int16 alignment
+    if len(tal_bytes) % 2 != 0:
+        tal_bytes = tal_bytes + b'\x00'
     
-    # EDF+ REQUIRES a time-keeping TAL at the start of each data record.
-    # Format: +<onset>\x14\x14\x00 (onset with empty annotation)
-    # For a single data record starting at time 0:
-    time_keeper_tal = b"+0\x14\x14\x00"
-    tal_segments.append(time_keeper_tal)
+    # Create signal array with specified size (may be larger than needed for padding)
+    signal = np.zeros(annotation_samples, dtype=np.int16)
     
-    # Add event annotations as additional TALs
-    if events:
-        for event in events:
-            if event.date is None:
-                continue
-            onset_seconds = (event.date - recording_start).total_seconds()
-            # Format onset with sign (+ or -) as required by EDF+
-            onset = f"{onset_seconds:+.6f}"
-            
-            # Duration is optional, format: \x15<duration>
-            duration = ""
-            if event.duration is not None and event.duration > 0:
-                duration = f"\x15{event.duration:.6f}"
-            
-            # Build annotation text
-            description_parts = []
-            if event.label:
-                description_parts.append(event.label)
-            if event.annotation:
-                description_parts.append(event.annotation)
-            elif event.IDStr and not description_parts:
-                description_parts.append(event.IDStr)
-            text = ": ".join(part for part in description_parts if part) or "Event"
-            
-            # TAL format: <onset><duration>\x14<annotation>\x14\x00
-            tal_segments.append(f"{onset}{duration}\x14{text}\x14\x00".encode("ascii", "ignore"))
+    # Copy TAL bytes into signal
+    n_samples_needed = len(tal_bytes) // 2
+    if n_samples_needed > 0:
+        signal[:n_samples_needed] = np.frombuffer(tal_bytes, dtype='<i2')
+    
+    return signal
 
-    # Combine all TALs into a single byte stream
-    tal_stream = b"".join(tal_segments)
+
+def _distribute_events_to_records(
+    events: Sequence[EventItem] | None,
+    recording_start: datetime,
+    n_records: int,
+    record_duration: float,
+) -> list[list[EventItem]]:
+    """Distribute events to their appropriate data records based on onset time.
     
-    # Calculate number of int16 samples needed to store the bytes
-    # Each int16 sample stores 2 bytes of TAL data
-    # We need ceiling division: (len + 1) // 2
-    byte_count = len(tal_stream)
-    sample_count = (byte_count + 1) // 2  # Round up to fit all bytes
-    sample_count = max(sample_count, 1)   # At least 1 sample
+    Returns a list of event lists, one per data record.
+    """
+    events_per_record: list[list[EventItem]] = [[] for _ in range(n_records)]
     
-    # Pad the byte stream to even length for int16 alignment
-    if byte_count % 2 != 0:
-        tal_stream = tal_stream + b'\x00'
+    if not events:
+        return events_per_record
     
-    # Store TAL bytes directly as raw bytes within int16 array
-    # The bytes are packed 2 per int16 sample (little-endian)
-    signal = np.zeros(sample_count, dtype=np.int16)
-    signal[:len(tal_stream) // 2] = np.frombuffer(tal_stream, dtype='<i2')
+    for event in events:
+        if event.date is None:
+            continue
+        onset_seconds = (event.date - recording_start).total_seconds()
+        # Determine which record this event belongs to
+        record_idx = int(onset_seconds / record_duration)
+        # Clamp to valid range (events at or after end go to last record)
+        record_idx = max(0, min(record_idx, n_records - 1))
+        events_per_record[record_idx].append(event)
     
-    return signal, sample_count
+    return events_per_record
+
+
+def _calculate_max_annotation_samples(
+    events: Sequence[EventItem] | None,
+    recording_start: datetime,
+    n_records: int,
+    record_duration: float,
+) -> int:
+    """Calculate the maximum number of annotation samples needed per record.
+    
+    All records must have the same number of annotation samples (EDF requirement).
+    We calculate the worst-case size and use that for all records.
+    """
+    events_per_record = _distribute_events_to_records(
+        events, recording_start, n_records, record_duration
+    )
+    
+    max_bytes = 0
+    for record_idx, record_events in enumerate(events_per_record):
+        # Time-keeper TAL for this record
+        record_start_time = record_idx * record_duration
+        time_keeper = _format_time_keeper_tal(record_start_time)
+        
+        # Event TALs for this record
+        event_tals = b"".join(
+            _format_event_tal(event, recording_start)
+            for event in record_events
+        )
+        
+        total_bytes = len(time_keeper) + len(event_tals)
+        max_bytes = max(max_bytes, total_bytes)
+    
+    # Minimum size for time-keeper TAL even with no events
+    min_bytes = len(_format_time_keeper_tal(0.0))
+    max_bytes = max(max_bytes, min_bytes)
+    
+    # Convert bytes to samples (2 bytes per sample, round up)
+    return (max_bytes + 1) // 2
 
 
 def write_edf(
@@ -225,10 +280,11 @@ def write_edf(
     https://www.edfplus.info/specs/edfplus.html
     
     Key EDF+ compliance features:
+    - Uses 1-second data records to stay well under size limits
     - Reserved field starts with 'EDF+C' (continuous recording)
     - Patient identification uses structured format: code sex birthdate name
     - Recording identification starts with 'Startdate DD-MMM-YYYY'
-    - EDF Annotations signal for events with time-keeping TAL
+    - EDF Annotations signal for events with time-keeping TAL per record
     """
     if data_uV.ndim != 2:
         raise ValueError("EDF writer expects data shaped as [samples, channels]")
@@ -249,16 +305,29 @@ def write_edf(
     # Format: Startdate DD-MMM-YYYY <admin_code> <technician> <equipment>
     recording_field = _format_edfplus_recording(start, patient_meta)
 
+    # Use 1-second data records to stay well under EDF size limits
+    # This ensures compatibility with strict readers like EDFbrowser
+    record_duration = 1.0  # seconds per record
+    samples_per_channel_per_record = int(sfreq)  # samples per channel per record
+    
+    # Calculate total number of records (round up to include partial last record)
+    total_duration = n_samples / sfreq
+    n_records = int(np.ceil(total_duration / record_duration))
+    
+    # Include annotations signal if annotations are provided
     include_annotations = annotations is not None
-    annotation_signal = None
+    
+    # Calculate annotation signal size (must be same for all records)
     annotation_samples = 0
     if include_annotations:
-        annotation_signal, annotation_samples = _format_annotation_events(annotations, start)
+        annotation_samples = _calculate_max_annotation_samples(
+            annotations, start, n_records, record_duration
+        )
+        # Ensure minimum size for time-keeper TAL
+        annotation_samples = max(annotation_samples, 8)
 
     total_channels = n_channels + (1 if include_annotations else 0)
     header_bytes = 256 + total_channels * 256
-    record_duration = n_samples / sfreq
-    number_of_records = 1
     
     # Date format: DD.MM.YY per EDF spec
     # Note: 2-digit year uses 1985 clipping (85-99 = 1985-1999, 00-84 = 2000-2084)
@@ -296,7 +365,7 @@ def write_edf(
         header.extend(_pad("", 44))
     
     # Number of data records: 8 bytes
-    header.extend(_pad(str(number_of_records), 8))
+    header.extend(_pad(str(n_records), 8))
     
     # Duration of data record in seconds: 8 bytes
     header.extend(_format_float(record_duration, 8, decimals=5))
@@ -324,9 +393,9 @@ def write_edf(
     # Digital range for EEG signals: full 16-bit signed range
     digital_min = np.full(n_channels, -32768, dtype=np.int32)
     digital_max = np.full(n_channels, 32767, dtype=np.int32)
-    samples_per_record = np.full(n_channels, n_samples, dtype=np.int32)
+    samples_per_record_array = np.full(n_channels, samples_per_channel_per_record, dtype=np.int32)
 
-    if include_annotations and annotation_signal is not None:
+    if include_annotations:
         # EDF Annotations signal per EDF+ spec section 2.2.1
         labels.append("EDF Annotations")
         
@@ -338,7 +407,10 @@ def write_edf(
         physical_diff = np.concatenate([physical_diff, np.array([2.0])])  # 1 - (-1) = 2
         digital_min = np.concatenate([digital_min, np.array([-32768], dtype=np.int32)])
         digital_max = np.concatenate([digital_max, np.array([32767], dtype=np.int32)])
-        samples_per_record = np.concatenate([samples_per_record, np.array([annotation_samples])])
+        samples_per_record_array = np.concatenate([
+            samples_per_record_array, 
+            np.array([annotation_samples], dtype=np.int32)
+        ])
 
     # Build signal header sections per EDF spec
     # Each section contains one field for each signal, stored sequentially
@@ -360,7 +432,7 @@ def write_edf(
         # Prefiltering info (80 bytes each) - empty per EDF spec (can be filled if known)
         (["" for _ in range(total_channels)], lambda text: _pad(text, 80)),
         # Number of samples per data record (8 bytes each)
-        (samples_per_record, lambda value: _pad(str(int(value)), 8)),
+        (samples_per_record_array, lambda value: _pad(str(int(value)), 8)),
         # Reserved (32 bytes each) - must be empty
         (["" for _ in range(total_channels)], lambda text: _pad(text, 32)),
     ]
@@ -369,19 +441,65 @@ def write_edf(
         for value in values:
             header.extend(formatter(value))
 
+    # Pre-compute scaling factors for digital conversion
     digital_range = (digital_max - digital_min).astype(np.float64)
     scales = digital_range / physical_diff.astype(np.float64)
+    
+    # Pre-distribute annotations to records if needed
+    events_per_record = None
+    if include_annotations:
+        events_per_record = _distribute_events_to_records(
+            annotations, start, n_records, record_duration
+        )
+    
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     with output_path.open("wb") as handle:
+        # Write header
         handle.write(header)
-        for ch_idx in range(total_channels):
-            if include_annotations and ch_idx == total_channels - 1:
-                signal = annotation_signal.astype("<i2") if annotation_signal is not None else np.array([], dtype="<i2")
-            else:
+        
+        # Write data records
+        # EDF format: for each record, write all channels sequentially
+        for record_idx in range(n_records):
+            # Calculate sample range for this record
+            start_sample = record_idx * samples_per_channel_per_record
+            end_sample = min(start_sample + samples_per_channel_per_record, n_samples)
+            actual_samples = end_sample - start_sample
+            
+            # Write each signal's data for this record
+            for ch_idx in range(n_channels):
+                # Get this channel's data for this record
+                channel_data = data_uV[start_sample:end_sample, ch_idx]
+                
+                # Scale to digital values
                 scaled = (
-                    (data_uV[:, ch_idx] - physical_min[ch_idx]) * scales[ch_idx] + digital_min[ch_idx]
+                    (channel_data - physical_min[ch_idx]) * scales[ch_idx] + digital_min[ch_idx]
                 )
                 signal = np.clip(np.rint(scaled), -32768, 32767).astype("<i2")
-            handle.write(signal.tobytes())
+                
+                # Pad with zeros if this is a partial record (last record)
+                if actual_samples < samples_per_channel_per_record:
+                    padded = np.zeros(samples_per_channel_per_record, dtype="<i2")
+                    padded[:actual_samples] = signal
+                    signal = padded
+                
+                handle.write(signal.tobytes())
+            
+            # Write annotation signal for this record if included
+            if include_annotations and events_per_record is not None:
+                # Build TAL bytes for this record
+                record_start_time = record_idx * record_duration
+                time_keeper = _format_time_keeper_tal(record_start_time)
+                
+                # Add event TALs for events in this record
+                event_tals = b"".join(
+                    _format_event_tal(event, start)
+                    for event in events_per_record[record_idx]
+                )
+                
+                tal_bytes = time_keeper + event_tals
+                annotation_signal = _build_annotation_signal(tal_bytes, annotation_samples)
+                handle.write(annotation_signal.tobytes())
+    
     return output_path

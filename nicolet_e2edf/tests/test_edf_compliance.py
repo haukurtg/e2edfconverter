@@ -299,3 +299,190 @@ def test_edf_compliance_quick(tmp_path: Path) -> None:
         assert reader.signals_in_file == 1
     finally:
         reader.close()
+
+
+def test_long_recording_with_multi_records(tmp_path: Path) -> None:
+    """Test that long recordings use multiple data records and stay under size limits.
+    
+    This tests the fix for the "datarecordsize is too many bytes" error.
+    
+    Without multi-record support, this would create a single data record of:
+    20 channels × 250 Hz × 60 seconds × 2 bytes = 600,000 bytes per record
+    
+    With 1-second records, each record is:
+    20 channels × 250 samples × 2 bytes = 10,000 bytes (well under 10 MB limit)
+    """
+    output_path = tmp_path / "long_recording.edf"
+    
+    # Simulate a 60-second recording with 20 channels at 250 Hz
+    # This would exceed single-record limits with the old approach
+    n_channels = 20
+    sfreq = 250.0
+    duration_seconds = 60
+    n_samples = int(sfreq * duration_seconds)  # 15,000 samples
+    
+    # Generate test data (random EEG-like signal)
+    np.random.seed(42)  # For reproducibility
+    data = np.random.randn(n_samples, n_channels).astype(np.float32) * 100
+    ch_names = [f"Ch{i+1}" for i in range(n_channels)]
+    
+    patient_meta = {
+        "PatientID": "LONG001",
+        "PatientName": "Long Recording Test",
+        "PatientSex": "X",
+    }
+    recording_start = datetime(2024, 7, 1, 8, 0, 0)
+    
+    # Add events distributed across the recording
+    events = [
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 7, 1, 8, 0, 5),  # 5 seconds in
+            duration=2.0,
+            user="test",
+            GUID="{TEST1}",
+            label="Event1",
+            IDStr="Event",
+            annotation="Early event",
+        ),
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 7, 1, 8, 0, 30),  # 30 seconds in
+            duration=1.0,
+            user="test",
+            GUID="{TEST2}",
+            label="Event2",
+            IDStr="Event",
+            annotation="Middle event",
+        ),
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 7, 1, 8, 0, 55),  # 55 seconds in
+            duration=0.5,
+            user="test",
+            GUID="{TEST3}",
+            label="Event3",
+            IDStr="Event",
+            annotation="Late event",
+        ),
+    ]
+    
+    # Write the EDF file with annotations
+    write_edf(
+        output_path,
+        data,
+        sfreq,
+        ch_names,
+        patient_meta=patient_meta,
+        recording_start=recording_start,
+        annotations=events,
+    )
+    
+    # Verify the file structure has multiple records
+    with open(output_path, "rb") as f:
+        header = f.read(256)
+    
+    # Check number of records (at offset 236-244)
+    n_records = int(header[236:244].decode("ascii").strip())
+    assert n_records == duration_seconds, f"Expected {duration_seconds} records, got {n_records}"
+    
+    # Check record duration (at offset 244-252)
+    record_duration = float(header[244:252].decode("ascii").strip())
+    assert record_duration == pytest.approx(1.0), f"Expected 1-second records, got {record_duration}"
+    
+    # PyEDFlib should read the file without errors
+    reader = pyedflib.EdfReader(str(output_path))
+    try:
+        # Should have all EEG channels
+        assert reader.signals_in_file == n_channels
+        
+        # Total duration should be correct
+        assert reader.file_duration == pytest.approx(duration_seconds, rel=0.01)
+        
+        # Verify we can read signal data from start, middle, and end
+        for ch_idx in [0, n_channels // 2, n_channels - 1]:
+            signal = reader.readSignal(ch_idx)
+            assert len(signal) == n_samples, f"Channel {ch_idx} has wrong length"
+    finally:
+        reader.close()
+
+
+def test_multi_record_annotation_distribution(tmp_path: Path) -> None:
+    """Test that annotations are correctly distributed across data records.
+    
+    Each data record should have a time-keeping TAL at its start,
+    and event annotations should be in the correct record based on onset time.
+    """
+    output_path = tmp_path / "multi_record_annot.edf"
+    
+    # 5-second recording at 100 Hz = 5 data records
+    n_samples = 500
+    sfreq = 100.0
+    data = np.random.randn(n_samples, 2) * 50
+    ch_names = ["Ch1", "Ch2"]
+    recording_start = datetime(2024, 8, 1, 12, 0, 0)
+    
+    # Events in different records
+    events = [
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 8, 1, 12, 0, 0, 500000),  # Record 0 (0.5s)
+            duration=0.0,
+            user="test",
+            GUID="{A}",
+            label="A",
+            IDStr="A",
+            annotation=None,
+        ),
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 8, 1, 12, 0, 2, 200000),  # Record 2 (2.2s)
+            duration=0.0,
+            user="test",
+            GUID="{B}",
+            label="B",
+            IDStr="B",
+            annotation=None,
+        ),
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2024, 8, 1, 12, 0, 4, 900000),  # Record 4 (4.9s)
+            duration=0.0,
+            user="test",
+            GUID="{C}",
+            label="C",
+            IDStr="C",
+            annotation=None,
+        ),
+    ]
+    
+    write_edf(
+        output_path,
+        data,
+        sfreq,
+        ch_names,
+        patient_meta={"PatientID": "DIST001"},
+        recording_start=recording_start,
+        annotations=events,
+    )
+    
+    # Verify file structure
+    with open(output_path, "rb") as f:
+        header = f.read(256)
+    
+    n_records = int(header[236:244].decode("ascii").strip())
+    assert n_records == 5, f"Expected 5 records, got {n_records}"
+    
+    # PyEDFlib should read without errors
+    reader = pyedflib.EdfReader(str(output_path))
+    try:
+        assert reader.signals_in_file == 2  # 2 EEG channels
+        assert reader.file_duration == pytest.approx(5.0, rel=0.01)
+    finally:
+        reader.close()

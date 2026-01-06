@@ -2,9 +2,11 @@
 
 <img src="docs/logo.png" alt="Logo" width="200">
 
-A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF format. No vendor DLLs, no MATLAB (which costs money!) — just Python 3.10+ and NumPy.
+A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!) — just Python 3.10+ and NumPy.
 
 I couldn't find a native Python way to get `.e` files out of their vendor bubble, so I wrote this. Maybe it helps you too.
+
+> **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Thank you to the FieldTrip team!
 
 ## Quick Start
 
@@ -72,10 +74,15 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Mixed sampling rates: only the dominant rate is kept
 - Events are written as EDF+ annotations
 
-## Attribution
+## Contributing
 
-This converter adapts logic from the [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox (GPL-3.0), specifically `read_nervus_data.m` and `read_nervus_header.m`.
+Contributions are welcome! If you're working on the EDF writer or want to understand the file format:
+
+- **EDF+ Specification**: A copy of the full EDF+ specification is included at [`docs/EDF+ specification.pdf`](docs/EDF+%20specification.pdf). The official spec is also available at [edfplus.info](https://www.edfplus.info/specs/edfplus.html).
+- **Tests**: Run `uv run pytest` to verify EDF+ compliance. We use PyEDFlib as a strict validator.
 
 ## License
 
 GPL-3.0 — see `LICENSE`.
+
+This project adapts logic from the [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox (GPL-3.0).
