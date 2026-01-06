@@ -439,8 +439,8 @@ def _write_json_sidecar(
     # Build the payload with ML-friendly structure
     payload = {
         # ===== Recording identification =====
-        "source_file": source_path.name,
-        "edf_file": output_path.name,
+        "source_file": str(source_path.resolve()),  # Full absolute path to original Nicolet file
+        "edf_file": str(output_path.resolve()),  # Full absolute path to generated EDF file
         
         # ===== Signal properties (flat, for filtering) =====
         "sampling_rate_hz": sampling_rate,
