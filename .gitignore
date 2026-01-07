@@ -1,14 +1,24 @@
+# Python-related
 .venv/
-.DS_Store
 *.pyc
 __pycache__/
 *.egg-info/
+.pytest_cache/
+
+# Hidden folders and files (starting with .)
+.DS_Store
+
+# Other folders
 out_edf*/
+EEG_test_files/
+research_sources/
+TODOs/
+
+# Files
+# EEG/EDF data files - never commit these accidentally
 *.edf
+*.e
+*.eeg
 *.png
 !docs/*.png
-EEG_Files/
-EEG_test_files/
-
-# Local-only third-party research sources (never commit anything under here).
-research_sources/
+edf_drop
