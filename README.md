@@ -76,11 +76,20 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Per-segment TSInfo parsing, channel on/off handling, and EEG offset support
 - Montage, patient, signal, and channel metadata parsing improvements
 - Optional mixed-rate handling via `--resample-to` (include all channels)
+- Segment-aware resampling if sampling rates change across segments
+- Event parsing robustness (2nd Events section offset + corruption guard)
 
 ## Limitations
 
 - Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
 - Events are written as EDF+ annotations
+- EVENTTYPEINFOGUID decoding is heuristic (not yet a deterministic parser)
+
+## Notes
+
+- Legacy detection is based on file header layout (`indexIdx == 0`), not file extension.
+- For corpus-level diagnostics (channels/segments/events/unknown GUIDs), use:
+  - `./.venv/bin/python nicolet_e2edf/tools/scan_corpus.py --root EEG_test_files/eeg_files --pattern "**/*.e"`
 
 ## Contributing
 
