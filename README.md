@@ -1,8 +1,8 @@
-# Nicolet `.e` → EDF
+# Nicolet `.e`/`.eeg` → EDF
 
 <img src="docs/logo.png" alt="Logo" width="200">
 
-A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!) — just Python 3.10+ and NumPy.
+A Python tool to convert Nicolet/Nervus `.e` (and legacy `.eeg`) EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!) — just Python 3.10+ and NumPy.
 
 I couldn't find a native Python way to get `.e` files out of their vendor bubble, so I wrote this. Maybe it helps you too.
 
@@ -19,7 +19,7 @@ brew install uv  # or: curl -LsSf https://astral.sh/uv/install.sh | sh
 # Convert a single file
 uv run --isolated nicolet-e2edf --in /path/to/recording.e --out ./edf_output
 
-# Convert a folder of .e files
+# Convert a folder of .e/.eeg files
 uv run --isolated nicolet-e2edf --in ./my_eeg_folder --out ./edf_output
 ```
 
@@ -37,7 +37,7 @@ uv run --isolated --with rich nicolet-e2edf --ui
 
 | Option | Description |
 |--------|-------------|
-| `--in` | Input `.e` file or folder |
+| `--in` | Input `.e`/`.eeg` file or folder |
 | `--out` | Output directory for EDF files |
 | `--glob` | Filter pattern when input is a folder (e.g. `Patient1_*`) |
 | `--json-sidecar` | Also emit a `.json` with metadata (channels, events, etc.) |
@@ -69,9 +69,17 @@ uv run --isolated --with mne python inspect_edf.py ./edf_output/Patient1.edf
 
 Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless systems).
 
+## What's new (0.2.0)
+
+- Legacy `.eeg` (pre-2012 Nervus) support for signals + basic annotations
+- Expanded event GUID coverage plus annotation/event-comment text extraction
+- Per-segment TSInfo parsing, channel on/off handling, and EEG offset support
+- Montage, patient, signal, and channel metadata parsing improvements
+- Optional mixed-rate handling via `--resample-to` (include all channels)
+
 ## Limitations
 
-- Mixed sampling rates: only the dominant rate is kept
+- Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
 - Events are written as EDF+ annotations
 
 ## Contributing

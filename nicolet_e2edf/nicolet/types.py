@@ -61,6 +61,7 @@ class SegmentInfo:
     samplingRate: np.ndarray
     scale: np.ndarray
     sampleCount: np.ndarray
+    eegOffset: np.ndarray | None = None
 
 
 @dataclass(**DATACLASS_KWARGS)
@@ -76,6 +77,8 @@ class EventItem:
     label: str
     IDStr: str
     annotation: str | None = None
+    segmentIndex: int | None = None
+    isEpoch: bool | None = None
 
 
 @dataclass(**DATACLASS_KWARGS)
@@ -94,10 +97,14 @@ class NervusHeader:
     SigInfo: list[dict[str, Any]] = field(default_factory=list)
     ChannelInfo: list[dict[str, Any]] = field(default_factory=list)
     TSInfo: list[TSEntry] = field(default_factory=list)
+    TSInfoBySegment: list[list[TSEntry]] = field(default_factory=list)
     Segments: list[SegmentInfo] = field(default_factory=list)
     Events: list[EventItem] = field(default_factory=list)
+    EventTypeInfo: dict[str, str] = field(default_factory=dict)
     MontageInfo: list[dict[str, Any]] = field(default_factory=list)
     MontageInfo2: list[dict[str, Any]] = field(default_factory=list)
+    LegacyInfo: dict[str, Any] = field(default_factory=dict)
+    format: str | None = None  # "nicolet-e", "nervus-eeg", etc.
     reference: str | None = None
     targetSamplingRate: float | None = None
     matchingChannels: list[int] = field(default_factory=list)

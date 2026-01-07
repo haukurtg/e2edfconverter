@@ -1,4 +1,4 @@
-"""Nicolet/Nervus `.e` to EDF conversion toolkit."""
+"""Nicolet/Nervus `.e`/`.eeg` to EDF conversion toolkit."""
 
 from importlib.metadata import PackageNotFoundError, version
 

@@ -1,4 +1,4 @@
-"""Header parsing utilities for Nicolet `.e` recordings."""
+"""Header parsing utilities for Nicolet `.e` (and legacy `.eeg`) recordings."""
 
 # This file includes logic adapted from FieldTrip's read_nervus_header.m.
 # FieldTrip is released under the GPL-3.0 licence. Copyright (C) the FieldTrip project.
@@ -23,6 +23,37 @@ DAY_SECONDS = 86400.0
 DATETIME_MINUS_FACTOR = 2_209_161_600
 POSIX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
+# Patient info property order (matches FieldTrip/Nicolet Reader)
+INFO_PROPS = [
+    "patientID",
+    "firstName",
+    "middleName",
+    "lastName",
+    "altID",
+    "mothersMaidenName",
+    "DOB",
+    "DOD",
+    "street",
+    "sexID",
+    "phone",
+    "notes",
+    "dominance",
+    "siteID",
+    "suffix",
+    "prefix",
+    "degree",
+    "apartment",
+    "city",
+    "state",
+    "country",
+    "language",
+    "height",
+    "weight",
+    "race",
+    "religion",
+    "maritalStatus",
+]
+
 
 def _safe_posix_datetime(seconds: float) -> datetime:
     """Return a timezone-aware datetime, clamping out-of-range values."""
@@ -44,7 +75,7 @@ STATIC_PACKET_ID_MAP = {
     "{8A19AA48-BEA0-40D5-B89F-667FC578D635}": "DERIVATIONGUID",
     "{F824D60C-995E-4D94-9578-893C755ECB99}": "FILTERGUID",
     "{02950361-35BB-4A22-9F0B-C78AAA5DB094}": "DISPLAYGUID",
-    "{8E9421-70F5-11D3-8F72-00105A9AFD56}": "FILEINFOGUID",
+    "{8E94EF21-70F5-11D3-8F72-00105A9AFD56}": "FILEINFOGUID",
     "{E4138BC0-7733-11D3-8685-0050044DAAB1}": "SRINFOGUID",
     "{C728E565-E5A0-4419-93D2-F6CFC69F3B8F}": "EVENTTYPEINFOGUID",
     "{D01B34A0-9DBD-11D3-93D3-00500400C148}": "AUDIOINFOGUID",
@@ -366,6 +397,253 @@ def _read_dynamic_packets(
     return dynamic_packets
 
 
+def _read_patient_info(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+) -> dict[str, object] | None:
+    packet = _lookup_static(static_packets, idstr="PATIENTINFOGUID")
+    if packet is None:
+        return None
+    index_entries = _main_index_by_section(main_index, packet.index)
+    if not index_entries:
+        return None
+    index_entry = index_entries[0]
+    handle.seek(index_entry.offset, 0)
+    _read_exact(handle, 16)  # GUID
+    _read_u64(handle)  # section length
+    n_values = _read_u64(handle)
+    n_bstr = _read_u64(handle)
+
+    info: dict[str, object] = {}
+    for _ in range(int(n_values)):
+        prop_id = _read_u64(handle)
+        if prop_id in (7, 8, 23, 24):
+            value = _read_double(handle)
+            if prop_id in (7, 8):
+                # Convert OLE days to datetime
+                info[INFO_PROPS[prop_id - 1]] = _ole_to_datetime(value)
+            else:
+                info[INFO_PROPS[prop_id - 1]] = value
+        else:
+            # Non-numeric properties are stored in the BSTR block
+            if 1 <= prop_id <= len(INFO_PROPS):
+                info[INFO_PROPS[prop_id - 1]] = None
+
+    if n_bstr:
+        str_setup = [_read_u64(handle) for _ in range(int(n_bstr) * 2)]
+        for i in range(0, len(str_setup), 2):
+            prop_id = int(str_setup[i])
+            strlen = int(str_setup[i + 1])
+            raw = _read_exact(handle, (strlen + 1) * 2)
+            value = _decode_utf16(raw)
+            if 1 <= prop_id <= len(INFO_PROPS):
+                info[INFO_PROPS[prop_id - 1]] = value
+
+    for prop in INFO_PROPS:
+        info.setdefault(prop, None)
+    return info
+
+
+def _read_signal_info(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+) -> list[dict[str, object]]:
+    packet = _lookup_static(static_packets, idstr="SIGNALINFOGUID")
+    if packet is None:
+        return []
+    index_entries = _main_index_by_section(main_index, packet.index)
+    if not index_entries:
+        return []
+    index_entry = index_entries[0]
+    handle.seek(index_entry.offset, 0)
+    _read_exact(handle, 16)  # GUID
+    _read_exact(handle, 64)  # name
+    handle.seek(152, 1)
+    handle.seek(512, 1)
+    nr_idx = _read_u16(handle)
+    _read_exact(handle, 3 * 2)  # misc1
+
+    signals: list[dict[str, object]] = []
+    for _ in range(int(nr_idx)):
+        sensor_name = _read_utf16(handle, 32)
+        transducer = _read_utf16(handle, 16)
+        guid_raw = _read_exact(handle, 16)
+        guid_compact, guid_pretty = _mixed_endian_guid(guid_raw)
+        b_bipolar = _read_u32(handle)
+        b_ac = _read_u32(handle)
+        b_high_filter = _read_u32(handle)
+        color = _read_u32(handle)
+        _read_exact(handle, 256)
+        signals.append(
+            {
+                "sensorName": sensor_name,
+                "transducer": transducer,
+                "guid": guid_compact,
+                "guidAsStr": guid_pretty,
+                "bBiPolar": bool(b_bipolar),
+                "bAC": bool(b_ac),
+                "bHighFilter": bool(b_high_filter),
+                "color": color,
+            }
+        )
+    return signals
+
+
+def _read_channel_info(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+) -> list[dict[str, object]]:
+    packet = _lookup_static(static_packets, idstr="CHANNELGUID")
+    if packet is None:
+        return []
+    index_entries = _main_index_by_section(main_index, packet.index)
+    if not index_entries:
+        return []
+    index_entry = index_entries[0]
+    handle.seek(index_entry.offset, 0)
+    _read_exact(handle, 16)  # GUID
+    _read_exact(handle, 64)  # name
+    handle.seek(152, 1)
+    _read_exact(handle, 16)  # reserved
+    _read_exact(handle, 16)  # deviceID
+    handle.seek(488, 1)
+    nr_idx1 = _read_u32(handle)
+    nr_idx2 = _read_u32(handle)
+
+    channel_info: list[dict[str, object]] = []
+    current_index = 0
+    for _ in range(int(nr_idx2)):
+        sensor = _read_utf16(handle, 32)
+        sampling_rate = _read_double(handle)
+        b_on = _read_u32(handle)
+        l_input_id = _read_u32(handle)
+        l_input_setting_id = _read_u32(handle)
+        _read_exact(handle, 4)  # reserved
+        handle.seek(128, 1)
+        if b_on:
+            index_id = current_index
+            current_index += 1
+        else:
+            index_id = -1
+        channel_info.append(
+            {
+                "sensor": sensor,
+                "samplingRate": sampling_rate,
+                "bOn": bool(b_on),
+                "lInputID": l_input_id,
+                "lInputSettingID": l_input_setting_id,
+                "indexID": index_id,
+            }
+        )
+    # nr_idx1 is often the number of traces; keep it for diagnostics.
+    if nr_idx1 and len(channel_info) == 0:
+        handle.seek(index_entry.offset + 16 + 64 + 152 + 16 + 16 + 488, 0)
+    return channel_info
+
+
+def _read_montage_info(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+) -> list[dict[str, object]]:
+    montage_packet = _lookup_static(static_packets, idstr="DERIVATIONGUID")
+    if montage_packet is None:
+        return []
+    index_entries = _main_index_by_section(main_index, montage_packet.index)
+    if not index_entries:
+        return []
+    index_entry = index_entries[0]
+    handle.seek(index_entry.offset + 40, 0)
+    montage_name = _read_utf16(handle, 32)
+    handle.seek(640, 1)
+    num_derivations = _read_u32(handle)
+    _read_u32(handle)
+    montage: list[dict[str, object]] = []
+    for _ in range(int(num_derivations)):
+        derivation_name = _read_utf16(handle, 64)
+        signal_name_1 = _read_utf16(handle, 32)
+        signal_name_2 = _read_utf16(handle, 32)
+        handle.seek(264, 1)
+        montage.append(
+            {
+                "montageName": montage_name,
+                "derivationName": derivation_name,
+                "signalName1": signal_name_1,
+                "signalName2": signal_name_2,
+            }
+        )
+
+    # Attach display colors when available.
+    display_packet = _lookup_static(static_packets, idstr="DISPLAYGUID")
+    if display_packet:
+        display_entries = _main_index_by_section(main_index, display_packet.index)
+        if display_entries:
+            display_entry = display_entries[0]
+            handle.seek(display_entry.offset + 40, 0)
+            display_name = _read_utf16(handle, 32)
+            handle.seek(640, 1)
+            num_traces = _read_u32(handle)
+            _read_u32(handle)
+            if num_traces == num_derivations:
+                for i in range(int(num_traces)):
+                    handle.seek(32, 1)
+                    color = _read_u32(handle)
+                    handle.seek(132, 1)
+                    montage[i]["displayName"] = display_name
+                    montage[i]["color"] = color
+    return montage
+
+
+def _read_dynamic_montages(dynamic_packets: list[dict[str, object]]) -> list[dict[str, object]]:
+    montages: list[dict[str, object]] = []
+    montage_packets = [pkt for pkt in dynamic_packets if pkt.get("IDStr") == "DERIVATIONGUID" and pkt.get("data")]
+    for pkt in montage_packets:
+        data = pkt.get("data") or b""
+        if len(data) < 760:
+            continue
+        guid1 = _mixed_endian_guid(data[0:16])[0]
+        packet_size = int.from_bytes(data[16:24], "little")
+        guid2 = _mixed_endian_guid(data[24:40])[0]
+        item_name = _decode_utf16(data[40:104])
+        elements = int.from_bytes(data[744:748], "little")
+        offset = 752
+        channels = []
+        for _ in range(elements):
+            name = _decode_utf16(data[offset : offset + 128])
+            offset += 128
+            active = _decode_utf16(data[offset : offset + 64])
+            offset += 64
+            reference = _decode_utf16(data[offset : offset + 64])
+            offset += 64
+            is_derived = bool(data[offset])
+            offset += 1
+            is_special = bool(data[offset])
+            offset += 1
+            offset += 256 + 6
+            channels.append(
+                {
+                    "name": name,
+                    "active": active,
+                    "reference": reference,
+                    "isDerived": is_derived,
+                    "isSpecial": is_special,
+                }
+            )
+        montages.append(
+            {
+                "guid1": guid1,
+                "guid2": guid2,
+                "packetSize": packet_size,
+                "itemName": item_name,
+                "channels": channels,
+            }
+        )
+    return montages
+
+
 # ---------------------------------------------------------------------------
 # TSInfo parsing
 # ---------------------------------------------------------------------------
@@ -436,15 +714,21 @@ def _parse_tsinfo_entries(buffer: bytes, count_offset: int, data_offset: int) ->
     return entries
 
 
-def _read_tsinfo(
+def _read_tsinfo_packets(
     handle: BinaryIO,
     static_packets: list[StaticPacket],
     dynamic_packets: list[dict[str, object]],
     main_index: list[MainIndexEntry],
-) -> list[TSEntry]:
+) -> list[dict[str, object]]:
+    packets: list[dict[str, object]] = []
+
     dynamic_ts = [pkt for pkt in dynamic_packets if pkt.get("IDStr") == "TSGUID" and pkt.get("data")]
-    if dynamic_ts:
-        return _parse_tsinfo_entries(dynamic_ts[0]["data"], count_offset=752, data_offset=760)
+    for pkt in dynamic_ts:
+        entries = _parse_tsinfo_entries(pkt["data"], count_offset=752, data_offset=760)
+        packets.append({"date": pkt.get("date"), "entries": entries, "source": "dynamic"})
+
+    if packets:
+        return packets
 
     static_ts = _lookup_static(static_packets, idstr="TSGUID")
     if static_ts is None:
@@ -457,7 +741,9 @@ def _read_tsinfo(
     _read_exact(handle, 16)  # GUID
     packet_length = _read_u64(handle)
     buffer = _read_exact(handle, packet_length)
-    return _parse_tsinfo_entries(buffer, count_offset=728, data_offset=736)
+    entries = _parse_tsinfo_entries(buffer, count_offset=728, data_offset=736)
+    packets.append({"date": None, "entries": entries, "source": "static"})
+    return packets
 
 
 # ---------------------------------------------------------------------------
@@ -469,11 +755,35 @@ def _ole_to_datetime(value: float) -> datetime:
     return _safe_posix_datetime(seconds)
 
 
+def _select_tsinfo_for_segment(
+    segment_date: datetime,
+    ts_packets: list[dict[str, object]],
+) -> list[TSEntry]:
+    if not ts_packets:
+        return []
+    if len(ts_packets) == 1:
+        return ts_packets[0]["entries"]
+
+    dated_packets = [pkt for pkt in ts_packets if pkt.get("date")]
+    if not dated_packets:
+        return ts_packets[0]["entries"]
+
+    # Choose the most recent TSInfo packet at or before the segment start.
+    dated_packets.sort(key=lambda pkt: pkt["date"])
+    selected = dated_packets[0]
+    for pkt in dated_packets:
+        if pkt["date"] <= segment_date:
+            selected = pkt
+        else:
+            break
+    return selected["entries"]
+
+
 def _read_segments(
     handle: BinaryIO,
     static_packets: list[StaticPacket],
     main_index: list[MainIndexEntry],
-    ts_info: list[TSEntry],
+    ts_packets: list[dict[str, object]],
 ) -> list[SegmentInfo]:
     segment_packet = _lookup_static(static_packets, idstr="SegmentStream")
     if segment_packet is None:
@@ -491,8 +801,11 @@ def _read_segments(
         handle.seek(8, 1)
         duration = _read_double(handle)
         handle.seek(128, 1)
+
+        ts_info = _select_tsinfo_for_segment(date, ts_packets)
         sampling = np.array([entry.samplingRate for entry in ts_info], dtype=float)
         scale = np.array([entry.resolution for entry in ts_info], dtype=float)
+        eeg_offset = np.array([entry.eeg_offset for entry in ts_info], dtype=float)
         if np.allclose(scale, 0.0):
             scale = np.ones_like(scale)
         sample_counts = np.rint(sampling * duration).astype(int)
@@ -506,6 +819,7 @@ def _read_segments(
                 samplingRate=sampling,
                 scale=scale,
                 sampleCount=sample_counts,
+                eegOffset=eeg_offset,
             )
         )
     return segments
@@ -515,6 +829,7 @@ _EVENT_PACKET_GUID = bytes.fromhex("80F699B7A472D31193D300500400C148")
 _EVENT_GUID_LABELS = {
     "{A5A95646-A7F8-11CF-831A-0800091B5BDA}": "Seizure",
     "{A5A95612-A7F8-11CF-831A-0800091B5BDA}": "Annotation",
+    "{A5A95645-A7F8-11CF-831A-0800091B5BDA}": "Event Comment",
     "{08784382-C765-11D3-90CE-00104B6F4F70}": "Format change",
     "{6FF394DA-D1B8-46DA-B78F-866C67CF02AF}": "Photic",
     "{481DFC97-013C-4BC5-A203-871B0375A519}": "Posthyperventilation",
@@ -522,6 +837,41 @@ _EVENT_GUID_LABELS = {
     "{96315D79-5C24-4A65-B334-E31A95088D55}": "Exam start",
     "{A5A95608-A7F8-11CF-831A-0800091B5BDA}": "Hyperventilation",
     "{A5A95617-A7F8-11CF-831A-0800091B5BDA}": "Impedance",
+    "{A71A6DB5-4150-48BF-B462-1C40521EBD6F}": "Amplifier Disconnect",
+    "{6387C7C8-6F98-4886-9AF4-FA750ED300DE}": "Amplifier Reconnect",
+    "{71EECE80-EBC4-41C7-BF26-E56911426FB4}": "Recording Paused",
+    "{C3B68051-EDCF-418C-8D53-27077B92DE22}": "Spike",
+    "{99FFE0AA-B8F9-49E5-8390-8F072F4E00FC}": "EEG Check",
+    "{A5A9560A-A7F8-11CF-831A-0800091B5BDA}": "Print",
+    "{A5A95616-A7F8-11CF-831A-0800091B5BDA}": "Patient Event",
+    "{0DE05C94-7D03-47B9-864F-D586627EA891}": "Eyes closed",
+    "{583AA2C6-1F4E-47CF-A8D4-80C69EB8A5F3}": "Eyes open",
+    "{BAE4550A-8409-4289-9D8A-0D571A206BEC}": "Eating",
+    "{1F3A45A4-4D0F-4CC4-A43A-CAD2BC2D71F2}": "ECG",
+    "{B0BECF64-E669-42B1-AE20-97A8B0BBEE26}": "Toilet",
+    "{A5A95611-A7F8-11CF-831A-0800091B5BDA}": "Fix Electrode",
+    "{08EC3F49-978D-4FE4-AE77-4C421335E5FF}": "Prune",
+    "{0A205CD4-1480-4F02-8AFF-4E4CD3B21078}": "Artifact",
+    "{A5A95609-A7F8-11CF-831A-0800091B5BDA}": "Print D",
+    "{A5A95637-A7F8-11CF-831A-0800091B5BDA}": "Tachycardia",
+    "{A0172995-4A24-401C-AB68-B585474E4C07}": "Seizure",
+    "{FF37D596-5703-43F9-A3F3-FA572C5D958C}": "Spike wave",
+    "{9DF82C59-6520-46E5-940F-16B1282F3DD6}": "EEG Check-theta li T",
+    "{06519E79-3C7B-4535-BA76-2AD76B6C65C8}": "Kom.-*",
+    "{CA4FCAD4-802E-4214-881A-E9C1C6549ABD}": "Arousal",
+    "{A5A95603-A7F8-11CF-831A-0800091B5BDA}": "Blink",
+    "{77A38C02-DCD4-4774-A47D-40437725B278}": "+Anfallsmuster D-?",
+    "{32DB96B9-ED12-429A-B98D-27B2A82AD61F}": "spike wave",
+    "{24387A0E-AA04-40B4-82D4-6D58F24D59AB}": "Anfallsmuster",
+    "{A5A95636-A7F8-11CF-831A-0800091B5BDA}": "Bradycardia",
+    "{93A2CB2C-F420-4672-AA62-18989F768519}": "Detections Inactive",
+    "{8C5D49BA-7105-4355-BF6C-B35B9A4E594A}": "EEG-Check",
+    "{5A946B85-2E1D-46B8-9FB2-C0519C9BE681}": "Zaehneputzen",
+    "{48DA028A-5264-4620-AD03-C8787951E237}": "Bewegt",
+    "{C15CFF61-0326-4276-A08F-0BFC2354E7CC}": "Kratzt",
+    "{F4DD5874-23BA-4FFA-94DD-BE436BB6910F}": "Anfall",
+    "{A5A95610-A7F8-11CF-831A-0800091B5BDA}": "Flash",
+    "{8CB92AA7-A886-4013-8D52-6CD1C71C72B4}": "ETP",
 }
 
 
@@ -529,6 +879,7 @@ def _read_events(
     handle: BinaryIO,
     static_packets: list[StaticPacket],
     main_index: list[MainIndexEntry],
+    segments: Sequence[SegmentInfo] | None = None,
 ) -> list[EventItem]:
     """Read events from the Events section.
     
@@ -549,8 +900,10 @@ def _read_events(
     events: list[EventItem] = []
     
     # Start at the first event section
-    for entry in index_entries:
+    for entry_index, entry in enumerate(index_entries):
         offset = entry.offset
+        if entry_index == 1:
+            offset += 248
         section_end = entry.offset + entry.sectionL
         
         # Read packets sequentially until we hit a non-event GUID or section end
@@ -563,6 +916,10 @@ def _read_events(
             
             # Stop if this is not an event packet
             if guid != _EVENT_PACKET_GUID:
+                break
+            if packet_length <= 0 or packet_length > section_end - offset or packet_length > 1_000_000:
+                break
+            if packet_length < 240:
                 break
             
             # Read ONE event from this packet
@@ -592,13 +949,19 @@ def _read_events(
             # Label (32 UTF-16 chars = 64 bytes)
             label = _read_exact(handle, 32 * 2).decode("utf-16le", errors="ignore").rstrip("\x00 ")
             
-            # Read annotation if this is an annotation event
+            # Read annotation if this is an annotation/comment event
             annotation = None
-            if guid_pretty == "{A5A95612-A7F8-11CF-831A-0800091B5BDA}" and text_len > 0:
+            if guid_pretty in {
+                "{A5A95612-A7F8-11CF-831A-0800091B5BDA}",  # Annotation
+                "{A5A95645-A7F8-11CF-831A-0800091B5BDA}",  # Event Comment
+            } and text_len > 0:
                 # Skip Reserved5 (32 bytes)
                 handle.seek(32, 1)
-                annotation_raw = _read_exact(handle, int(text_len) * 2)
-                decoded = annotation_raw.decode("utf-16le", errors="ignore")
+                bytes_left = offset + packet_length - handle.tell()
+                max_chars = max(int(bytes_left // 2), 0)
+                read_chars = min(int(text_len), max_chars)
+                annotation_raw = _read_exact(handle, read_chars * 2) if read_chars else b""
+                decoded = annotation_raw.decode("utf-16le", errors="ignore") if annotation_raw else ""
                 # Clean: take text up to first null character (rest is buffer garbage)
                 if "\x00" in decoded:
                     decoded = decoded.split("\x00")[0]
@@ -606,6 +969,15 @@ def _read_events(
             
             label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
             event_time = _ole_to_datetime(date_ole + date_fraction / DAY_SECONDS)
+            seg_index = None
+            if segments:
+                seg_index = 0
+                for idx, segment in enumerate(segments):
+                    if segment.date <= event_time:
+                        seg_index = idx
+                    else:
+                        break
+            is_epoch = duration > 0.0
             
             events.append(
                 EventItem(
@@ -618,6 +990,8 @@ def _read_events(
                     label=label,
                     IDStr=label_text,
                     annotation=annotation,
+                    segmentIndex=seg_index,
+                    isEpoch=is_epoch,
                 )
             )
             
@@ -625,6 +999,73 @@ def _read_events(
             offset = offset + packet_length
     
     return events
+
+
+def _guid_to_mixed_bytes(guid_pretty: str) -> bytes:
+    compact = guid_pretty.strip("{}").replace("-", "")
+    raw = bytes.fromhex(compact)
+    part1 = raw[0:4][::-1]
+    part2 = raw[4:6][::-1]
+    part3 = raw[6:8][::-1]
+    remainder = raw[8:]
+    return part1 + part2 + part3 + remainder
+
+
+def _looks_like_label(text: str) -> bool:
+    if not text or len(text) < 3:
+        return False
+    letters = sum(ch.isalpha() for ch in text)
+    printable = sum(32 <= ord(ch) <= 126 or ch.isalpha() for ch in text)
+    return letters >= 3 and printable / max(len(text), 1) > 0.6
+
+
+def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 512, max_chars: int = 64) -> str | None:
+    end_limit = min(len(buffer), start + max_scan)
+    for offset in range(start, end_limit, 2):
+        end = offset
+        chars = 0
+        while end + 1 < len(buffer) and chars < max_chars:
+            if buffer[end : end + 2] == b"\x00\x00":
+                break
+            end += 2
+            chars += 1
+        if end == offset:
+            continue
+        text = _decode_utf16(buffer[offset:end])
+        if _looks_like_label(text):
+            return text
+    return None
+
+
+def _read_event_type_info(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+    target_guids: Iterable[str] | None = None,
+) -> dict[str, str]:
+    packet = _lookup_static(static_packets, idstr="EVENTTYPEINFOGUID")
+    if packet is None:
+        return {}
+    index_entries = _main_index_by_section(main_index, packet.index)
+    if not index_entries:
+        return {}
+    index_entry = index_entries[0]
+    handle.seek(index_entry.offset, 0)
+    buffer = _read_exact(handle, index_entry.sectionL)
+    if not target_guids:
+        return {}
+
+    mapping: dict[str, str] = {}
+    for guid in target_guids:
+        mixed = _guid_to_mixed_bytes(guid)
+        pos = buffer.find(mixed)
+        while pos != -1:
+            label = _scan_utf16_label(buffer, pos + 16)
+            if label:
+                mapping[guid] = label
+                break
+            pos = buffer.find(mixed, pos + 1)
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -657,13 +1098,16 @@ def _build_public_header(nrv_header: NervusHeader) -> dict[str, object]:
         }
 
     sampling_rates = nrv_header.Segments[0].samplingRate
+    on_mask = np.ones_like(sampling_rates, dtype=bool)
+    if nrv_header.ChannelInfo and len(nrv_header.ChannelInfo) == len(sampling_rates):
+        on_mask = np.array([bool(ch.get("bOn", True)) for ch in nrv_header.ChannelInfo], dtype=bool)
     rounded = np.round(sampling_rates, decimals=6)
     unique_rates, counts = np.unique(rounded, return_counts=True)
     target_sampling_rate = float(unique_rates[np.argmax(counts)])
-    match_mask = np.isclose(rounded, target_sampling_rate, rtol=1e-6, atol=1e-6)
+    match_mask = np.isclose(rounded, target_sampling_rate, rtol=1e-6, atol=1e-6) & on_mask
     matching_channels = np.where(match_mask)[0]
     if matching_channels.size == 0:
-        match_mask = np.ones_like(sampling_rates, dtype=bool)
+        match_mask = on_mask if np.any(on_mask) else np.ones_like(sampling_rates, dtype=bool)
         matching_channels = np.arange(len(sampling_rates))
 
     nrv_header.targetSamplingRate = target_sampling_rate
@@ -675,7 +1119,10 @@ def _build_public_header(nrv_header: NervusHeader) -> dict[str, object]:
     for segment in nrv_header.Segments:
         if segment.sampleCount.size == 0:
             continue
-        total_samples += int(np.max(segment.sampleCount[match_mask]))
+        try:
+            total_samples += int(np.max(segment.sampleCount[match_mask]))
+        except ValueError:
+            total_samples += int(np.max(segment.sampleCount))
     nrv_header.targetSampleCount = total_samples
 
     labels = [nrv_header.Segments[0].chName[idx] for idx in matching_channels]
@@ -706,7 +1153,16 @@ def read_nervus_header(path: str | Path):
         _read_u32(handle)
         index_idx = _read_u32(handle)
         if index_idx == 0:
-            raise ValueError("Unsupported old-style Nicolet file format (pre-ca. 2012)")
+            try:
+                from .legacy import read_legacy_header
+
+                legacy_header = read_legacy_header(filename)
+            except Exception as exc:
+                raise ValueError(
+                    "Unsupported legacy Nicolet file format (pre-ca. 2012)"
+                ) from exc
+            public_header = _build_public_header(legacy_header)
+            return public_header, legacy_header
 
         static_packets = _read_static_packets(handle)
         qi_index = _read_qi_index(handle, len(static_packets))
@@ -714,9 +1170,29 @@ def read_nervus_header(path: str | Path):
         main_index = _read_main_index(handle, index_idx, int(qi_index["nrEntries"]))
         info_guids = _read_info_guids(handle, static_packets, main_index)
         dynamic_packets = _read_dynamic_packets(handle, static_packets, main_index)
-        ts_info = _read_tsinfo(handle, static_packets, dynamic_packets, main_index)
-        segments = _read_segments(handle, static_packets, main_index, ts_info)
-        events = _read_events(handle, static_packets, main_index)
+        patient_info = _read_patient_info(handle, static_packets, main_index)
+        sig_info = _read_signal_info(handle, static_packets, main_index)
+        channel_info = _read_channel_info(handle, static_packets, main_index)
+        montage_info = _read_montage_info(handle, static_packets, main_index)
+        montage_info2 = _read_dynamic_montages(dynamic_packets)
+        ts_packets = _read_tsinfo_packets(handle, static_packets, dynamic_packets, main_index)
+        segments = _read_segments(handle, static_packets, main_index, ts_packets)
+        events = _read_events(handle, static_packets, main_index, segments)
+        event_type_info = _read_event_type_info(
+            handle,
+            static_packets,
+            main_index,
+            target_guids={event.GUID for event in events},
+        )
+        if event_type_info:
+            for event in events:
+                if event.GUID in event_type_info and event.IDStr == "UNKNOWN":
+                    event.IDStr = event_type_info[event.GUID]
+        for event in events:
+            if event.IDStr == "UNKNOWN":
+                cleaned = event.label.strip() if event.label else ""
+                if cleaned and cleaned != "-":
+                    event.IDStr = cleaned
 
     nrv_header = NervusHeader(
         filename=filename,
@@ -727,9 +1203,17 @@ def read_nervus_header(path: str | Path):
         allIndexIDs=[entry.sectionIdx for entry in main_index],
         infoGuids=info_guids,
         DynamicPackets=dynamic_packets,
-        TSInfo=ts_info,
+        PatientInfo=patient_info,
+        SigInfo=sig_info,
+        ChannelInfo=channel_info,
+        TSInfo=ts_packets[0]["entries"] if ts_packets else [],
+        TSInfoBySegment=[_select_tsinfo_for_segment(seg.date, ts_packets) for seg in segments],
         Segments=segments,
         Events=events,
+        MontageInfo=montage_info,
+        MontageInfo2=montage_info2,
+        EventTypeInfo=event_type_info,
+        format="nicolet-e",
     )
 
     public_header = _build_public_header(nrv_header)

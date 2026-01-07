@@ -9,3 +9,6 @@ out_edf*/
 !docs/*.png
 EEG_Files/
 EEG_test_files/
+
+# Local-only third-party research sources (never commit anything under here).
+research_sources/

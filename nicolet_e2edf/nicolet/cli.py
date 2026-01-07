@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nicolet-e2edf",
-        description="Convert Nicolet/Nervus .e EEG recordings into EDF files.",
+        description="Convert Nicolet/Nervus .e/.eeg EEG recordings into EDF files.",
     )
     parser.add_argument(
         "--in",
@@ -189,10 +189,65 @@ def _channel_labels(header, channels: Iterable[int]) -> list[str]:
     return resolved
 
 
-def _select_channels(header) -> list[int]:
+def _select_channels(header, *, include_all: bool = False) -> list[int]:
+    if include_all:
+        if header.ChannelInfo and header.Segments:
+            label_count = len(header.Segments[0].chName) if header.Segments else 0
+            if label_count and len(header.ChannelInfo) == label_count:
+                channels = [
+                    idx + 1 for idx, info in enumerate(header.ChannelInfo) if info.get("bOn", True)
+                ]
+                if channels:
+                    return channels
+        if header.TSInfo:
+            return list(range(1, len(header.TSInfo) + 1))
+        if header.Segments and header.Segments[0].chName:
+            return list(range(1, len(header.Segments[0].chName) + 1))
     if header.matchingChannels:
         return list(header.matchingChannels)
-    return list(range(1, len(header.TSInfo) + 1))
+    if header.TSInfo:
+        return list(range(1, len(header.TSInfo) + 1))
+    if header.Segments and header.Segments[0].chName:
+        return list(range(1, len(header.Segments[0].chName) + 1))
+    return []
+
+
+def _recording_duration_seconds(header) -> float:
+    if not header.Segments:
+        return 0.0
+    return float(sum(segment.duration for segment in header.Segments if segment.duration))
+
+
+def _channel_rate_and_variation(header, channel_zero_based: int) -> tuple[float | None, bool]:
+    if not header.Segments:
+        return None, False
+    rates: list[float] = []
+    for segment in header.Segments:
+        if segment.samplingRate is None:
+            continue
+        if channel_zero_based < len(segment.samplingRate):
+            rates.append(float(segment.samplingRate[channel_zero_based]))
+    if not rates:
+        return None, False
+    base = rates[0]
+    varied = any(not np.isclose(rate, base, rtol=1e-6, atol=1e-6) for rate in rates[1:])
+    return base, varied
+
+
+def _sampling_rate_variation(header, channels: Iterable[int]) -> tuple[bool, bool]:
+    rates: list[float] = []
+    mixed_over_time = False
+    for ch in channels:
+        rate, varied = _channel_rate_and_variation(header, ch - 1)
+        if rate is not None:
+            rates.append(rate)
+        if varied:
+            mixed_over_time = True
+    mixed_across_channels = False
+    if rates:
+        rounded = np.round(np.array(rates, dtype=float), decimals=6)
+        mixed_across_channels = len(np.unique(rounded)) > 1
+    return mixed_across_channels, mixed_over_time
 
 
 def _resample_waveform(waveform: np.ndarray, original_fs: float, target_fs: float) -> np.ndarray:
@@ -211,6 +266,123 @@ def _resample_waveform(waveform: np.ndarray, original_fs: float, target_fs: floa
     for idx in range(n_channels):
         resampled[:, idx] = np.interp(target_times, original_times, waveform[:, idx])
     return resampled
+
+
+def _resample_vector(
+    samples: np.ndarray,
+    original_fs: float,
+    target_fs: float,
+    target_samples: int | None = None,
+) -> np.ndarray:
+    if target_fs <= 0:
+        raise ValueError("Resample rate must be positive")
+    if original_fs <= 0:
+        raise ValueError("Original sampling rate must be positive")
+    if target_samples is None:
+        duration_seconds = len(samples) / float(original_fs) if original_fs else 0.0
+        target_samples = max(int(round(duration_seconds * target_fs)), 1)
+    if target_samples <= 0:
+        return np.empty(0, dtype=np.float32)
+    if np.isclose(original_fs, target_fs) and target_samples == len(samples):
+        return samples.astype(np.float32, copy=False)
+    if len(samples) == 0:
+        return np.zeros(target_samples, dtype=np.float32)
+    if len(samples) == 1:
+        return np.full(target_samples, float(samples[0]), dtype=np.float32)
+    original_times = np.arange(len(samples), dtype=np.float64) / float(original_fs)
+    target_times = np.arange(target_samples, dtype=np.float64) / float(target_fs)
+    return np.interp(target_times, original_times, samples).astype(np.float32)
+
+
+def _segment_target_samples(header, target_fs: float) -> list[int]:
+    durations = [float(seg.duration) for seg in header.Segments] if header.Segments else []
+    if not durations:
+        return []
+    total_duration = sum(durations)
+    total_target = max(int(round(total_duration * target_fs)), 1)
+    per_segment = [max(int(round(duration * target_fs)), 0) for duration in durations]
+    if per_segment:
+        per_segment[-1] = max(total_target - sum(per_segment[:-1]), 0)
+    return per_segment
+
+
+def _resample_channel_segments(
+    input_path: Path,
+    header,
+    channel: int,
+    target_fs: float,
+    target_segments: list[int],
+) -> np.ndarray:
+    channel_zb = channel - 1
+    samples_out: list[np.ndarray] = []
+    offset = 0
+    for seg_idx, segment in enumerate(header.Segments):
+        seg_samples = 0
+        if segment.sampleCount is not None and channel_zb < len(segment.sampleCount):
+            seg_samples = int(segment.sampleCount[channel_zb])
+        target_len = target_segments[seg_idx] if seg_idx < len(target_segments) else 0
+        if seg_samples <= 0 or target_len <= 0:
+            samples_out.append(np.zeros(target_len, dtype=np.float32))
+            offset += max(seg_samples, 0)
+            continue
+        beg = offset + 1
+        end = offset + seg_samples
+        data = read_nervus_data(input_path, header, channels=[channel], begsample=beg, endsample=end)
+        samples = data[0] if data.size else np.zeros(0, dtype=np.float32)
+        rate = None
+        if segment.samplingRate is not None and channel_zb < len(segment.samplingRate):
+            rate = float(segment.samplingRate[channel_zb])
+        if rate is None or rate <= 0:
+            rate = float(header.targetSamplingRate or 0.0)
+        if rate <= 0:
+            samples_out.append(np.zeros(target_len, dtype=np.float32))
+        else:
+            samples_out.append(_resample_vector(samples, rate, target_fs, target_len))
+        offset += seg_samples
+    if not samples_out:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(samples_out)
+
+
+def _read_and_resample_mixed(
+    input_path: Path,
+    header,
+    channels: list[int],
+    target_fs: float,
+    segment_aware: bool,
+) -> np.ndarray:
+    waveform = None
+    target_segments = _segment_target_samples(header, target_fs) if segment_aware else []
+    total_target = sum(target_segments) if target_segments else None
+    for idx, ch in enumerate(channels):
+        rate, varied = _channel_rate_and_variation(header, ch - 1)
+        if rate is None or rate <= 0:
+            raise RuntimeError(f"Unable to determine sampling rate for channel {ch}")
+        if varied and not segment_aware:
+            logger.warning(
+                "Sampling rate changes across segments for channel %d; using first-segment rate %.4f Hz",
+                ch,
+                rate,
+            )
+        if segment_aware and target_segments:
+            resampled = _resample_channel_segments(
+                input_path, header, ch, target_fs, target_segments
+            )
+            target_samples = resampled.size
+        else:
+            data = read_nervus_data(input_path, header, channels=[ch])
+            samples = data[0] if data.size else np.zeros(0, dtype=np.float32)
+            if total_target is None:
+                duration = len(samples) / float(rate) if rate else 0.0
+                total_target = max(int(round(duration * target_fs)), 1)
+            target_samples = total_target
+            resampled = _resample_vector(samples, rate, target_fs, target_samples)
+        if waveform is None:
+            waveform = np.zeros((target_samples, len(channels)), dtype=np.float32)
+        waveform[: resampled.size, idx] = resampled
+    if waveform is None:
+        return np.zeros((0, 0), dtype=np.float32)
+    return waveform
 
 
 def _bandpass_filter(
@@ -497,32 +669,58 @@ def convert_file(
     if not fs:
         raise RuntimeError("Unable to determine sampling frequency from header")
 
-    channels = _select_channels(nrv_header)
+    channels = _select_channels(nrv_header, include_all=resample_to is not None)
     if not channels:
         raise RuntimeError("No channels available for conversion")
 
     if status_cb:
         status_cb("read data")
     channel_labels = _channel_labels(nrv_header, channels)
-    waveform = read_nervus_data(input_path, nrv_header, channels=channels).T  # samples x channels
+    mixed_across_channels, mixed_over_time = _sampling_rate_variation(nrv_header, channels)
+    if resample_to is not None and mixed_over_time:
+        logger.warning(
+            "Sampling rates vary across segments; resampling is applied per segment."
+        )
 
-    # Apply optional bandpass/highpass/lowpass filter
-    if lowcut is not None or highcut is not None:
-        if status_cb:
-            status_cb("bandpass filter")
-        waveform = _bandpass_filter(waveform, float(fs), lowcut, highcut)
-
-    # Apply optional notch filter (powerline removal)
-    if notch is not None and notch > 0:
-        if status_cb:
-            status_cb("notch filter")
-        waveform = _notch_filter(waveform, float(fs), notch)
-
-    if resample_to is not None:
+    if resample_to is not None and (mixed_across_channels or mixed_over_time):
         if status_cb:
             status_cb("resample")
-        waveform = _resample_waveform(waveform, float(fs), float(resample_to))
+        waveform = _read_and_resample_mixed(
+            input_path,
+            nrv_header,
+            channels,
+            float(resample_to),
+            segment_aware=mixed_over_time,
+        )
         fs = float(resample_to)
+        if lowcut is not None or highcut is not None:
+            if status_cb:
+                status_cb("bandpass filter")
+            waveform = _bandpass_filter(waveform, float(fs), lowcut, highcut)
+        if notch is not None and notch > 0:
+            if status_cb:
+                status_cb("notch filter")
+            waveform = _notch_filter(waveform, float(fs), notch)
+    else:
+        waveform = read_nervus_data(input_path, nrv_header, channels=channels).T  # samples x channels
+
+        # Apply optional bandpass/highpass/lowpass filter
+        if lowcut is not None or highcut is not None:
+            if status_cb:
+                status_cb("bandpass filter")
+            waveform = _bandpass_filter(waveform, float(fs), lowcut, highcut)
+
+        # Apply optional notch filter (powerline removal)
+        if notch is not None and notch > 0:
+            if status_cb:
+                status_cb("notch filter")
+            waveform = _notch_filter(waveform, float(fs), notch)
+
+        if resample_to is not None:
+            if status_cb:
+                status_cb("resample")
+            waveform = _resample_waveform(waveform, float(fs), float(resample_to))
+            fs = float(resample_to)
 
     patient_meta = _select_patient_metadata(input_path, patient_rules)
 

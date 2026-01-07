@@ -96,7 +96,12 @@ def read_nervus_data(
     begsample: int | None = None,
     endsample: int | None = None,
 ) -> np.ndarray:
-    """Read waveform data from a Nicolet/Nervus `.e` recording."""
+    """Read waveform data from a Nicolet/Nervus recording."""
+
+    if header.format == "nervus-eeg":
+        from .legacy import read_legacy_data
+
+        return read_legacy_data(path, header, channels=channels, begsample=begsample, endsample=endsample)
 
     if not header.Segments:
         raise ValueError("Header does not contain segment information")
@@ -154,9 +159,14 @@ def read_nervus_data(
                 )
                 if raw.size == 0:
                     break
-                scale = float(segment.scale[channel_zb])
+                scale = float(segment.scale[channel_zb]) if segment.scale is not None else 1.0
+                if np.isclose(scale, 0.0):
+                    scale = 1.0
+                offset = 0.0
+                if segment.eegOffset is not None and channel_zb < len(segment.eegOffset):
+                    offset = float(segment.eegOffset[channel_zb])
                 count = min(raw.size, samples_to_copy)
-                data[ch_idx, relative_start : relative_start + count] = raw[:count] * scale
+                data[ch_idx, relative_start : relative_start + count] = raw[:count] * scale + offset
                 if raw.size < samples_to_copy:
                     break
     return data
