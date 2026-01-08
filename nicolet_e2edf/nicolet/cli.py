@@ -48,6 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a JSON sidecar with channel metadata and events",
     )
     parser.add_argument(
+        "--split-by-segment",
+        action="store_true",
+        help="Write one EDF per segment when recordings contain multiple segments",
+    )
+    parser.add_argument(
+        "--vendor-style",
+        action="store_true",
+        help="Suppress system events to better match vendor EDF exports",
+    )
+    parser.add_argument(
         "--resample-to",
         type=float,
         help="Optional sampling rate (Hz) to resample the output EDF to",
@@ -306,6 +316,109 @@ def _segment_target_samples(header, target_fs: float) -> list[int]:
     if per_segment:
         per_segment[-1] = max(total_target - sum(per_segment[:-1]), 0)
     return per_segment
+
+
+def _segment_sample_window(header, channel_zero_based: int, seg_idx: int) -> tuple[int, int] | None:
+    if not header.Segments:
+        return None
+    if seg_idx < 0 or seg_idx >= len(header.Segments):
+        return None
+    offset = 0
+    for seg in header.Segments[:seg_idx]:
+        if seg.sampleCount is None or channel_zero_based >= len(seg.sampleCount):
+            return None
+        offset += int(seg.sampleCount[channel_zero_based])
+    target_seg = header.Segments[seg_idx]
+    if target_seg.sampleCount is None or channel_zero_based >= len(target_seg.sampleCount):
+        return None
+    count = int(target_seg.sampleCount[channel_zero_based])
+    if count <= 0:
+        return None
+    return offset + 1, offset + count
+
+
+def _read_segment_waveform(
+    input_path: Path,
+    header,
+    channels: list[int],
+    seg_idx: int,
+) -> np.ndarray:
+    if not channels:
+        return np.zeros((0, 0), dtype=np.float32)
+    base_channel = channels[0] - 1
+    window = _segment_sample_window(header, base_channel, seg_idx)
+    if window:
+        beg, end = window
+        try:
+            data = read_nervus_data(input_path, header, channels=channels, begsample=beg, endsample=end)
+            return data.T
+        except NotImplementedError:
+            pass
+    # Fallback: read per channel and pad to max length.
+    samples: list[np.ndarray] = []
+    max_len = 0
+    for ch in channels:
+        window = _segment_sample_window(header, ch - 1, seg_idx)
+        if not window:
+            vec = np.zeros(0, dtype=np.float32)
+        else:
+            beg, end = window
+            data = read_nervus_data(input_path, header, channels=[ch], begsample=beg, endsample=end)
+            vec = data[0] if data.size else np.zeros(0, dtype=np.float32)
+        samples.append(vec)
+        max_len = max(max_len, vec.size)
+    waveform = np.zeros((max_len, len(channels)), dtype=np.float32)
+    for idx, vec in enumerate(samples):
+        if vec.size:
+            waveform[: vec.size, idx] = vec
+    return waveform
+
+
+def _segment_events(
+    events: Sequence[EventItem] | None,
+    segment: SegmentInfo,
+    seg_idx: int,
+) -> list[EventItem]:
+    if not events or not segment.date or not segment.duration:
+        return []
+    seg_start = segment.date
+    seg_end = seg_start + timedelta(seconds=float(segment.duration))
+    selected: list[EventItem] = []
+    for event in events:
+        if event.segmentIndex == seg_idx:
+            selected.append(event)
+            continue
+        if event.date and seg_start <= event.date < seg_end:
+            selected.append(event)
+    return selected
+
+
+def _segment_output_path(base_output: Path, seg_idx: int, seg_count: int) -> Path:
+    if seg_count <= 1:
+        return base_output
+    return base_output.with_name(f"{base_output.stem}_seg{seg_idx + 1}{base_output.suffix}")
+
+
+def _filter_vendor_events(events: Sequence[EventItem] | None) -> list[EventItem]:
+    if not events:
+        return []
+    skip_guids = {
+        "{93A2CB2C-F420-4672-AA62-18989F768519}",  # Detections Inactive
+        "{98FB933E-5183-4E4D-99AF-88AA29B22D05}",  # Detections Active
+        "{96315D79-5C24-4A65-B334-E31A95088D55}",  # Us. start
+        "{725798BF-CD1C-4909-B793-6C7864C27AB7}",  # Review progress
+    }
+    skip_ids = {
+        "Video Review Progress",
+        "Exam start",
+        "Video Start",
+        "Video Stop",
+    }
+    return [
+        event
+        for event in events
+        if event.GUID not in skip_guids and event.IDStr not in skip_ids
+    ]
 
 
 def _resample_channel_segments(
@@ -749,6 +862,8 @@ def convert_file(
     lowcut: float | None = None,
     highcut: float | None = None,
     notch: float | None = None,
+    split_by_segment: bool = False,
+    vendor_style: bool = False,
     status_cb=None,
 ) -> Path:
     if status_cb:
@@ -770,6 +885,71 @@ def convert_file(
         logger.warning(
             "Sampling rates vary across segments; resampling is applied per segment."
         )
+
+    patient_meta = _select_patient_metadata(input_path, patient_rules)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_output = Path(output_path) if output_path else _candidate_output_path(input_path, output_dir, input_root)
+    segments = nrv_header.Segments or []
+    if split_by_segment and len(segments) > 1:
+        for seg_idx, segment in enumerate(segments):
+            if status_cb:
+                status_cb(f"read data (segment {seg_idx + 1}/{len(segments)})")
+            seg_waveform = _read_segment_waveform(input_path, nrv_header, channels, seg_idx)
+            seg_fs = fs
+            if segment.samplingRate is not None and segment.samplingRate.size:
+                ch0 = channels[0] - 1
+                if ch0 < len(segment.samplingRate):
+                    seg_fs = float(segment.samplingRate[ch0])
+            if resample_to is not None:
+                if status_cb:
+                    status_cb(f"resample (segment {seg_idx + 1}/{len(segments)})")
+                seg_waveform = _resample_waveform(seg_waveform, float(seg_fs), float(resample_to))
+                seg_fs = float(resample_to)
+            if lowcut is not None or highcut is not None:
+                if status_cb:
+                    status_cb(f"bandpass filter (segment {seg_idx + 1}/{len(segments)})")
+                seg_waveform = _bandpass_filter(seg_waveform, float(seg_fs), lowcut, highcut)
+            if notch is not None and notch > 0:
+                if status_cb:
+                    status_cb(f"notch filter (segment {seg_idx + 1}/{len(segments)})")
+                seg_waveform = _notch_filter(seg_waveform, float(seg_fs), notch)
+
+            segment_events = _segment_events(nrv_header.Events, segment, seg_idx)
+            if vendor_style:
+                segment_events = _filter_vendor_events(segment_events)
+            segment_output = _segment_output_path(resolved_output, seg_idx, len(segments))
+            segment_start = segment.date or nrv_header.startDateTime
+            if status_cb:
+                status_cb(f"write edf (segment {seg_idx + 1}/{len(segments)})")
+            write_edf(
+                segment_output,
+                seg_waveform,
+                seg_fs,
+                channel_labels,
+                patient_meta,
+                recording_start=segment_start,
+                annotations=segment_events,
+            )
+            if json_sidecar:
+                if status_cb:
+                    status_cb(f"write json (segment {seg_idx + 1}/{len(segments)})")
+                _write_json_sidecar(
+                    segment_output,
+                    source_path=input_path,
+                    sampling_rate=seg_fs,
+                    channel_labels=channel_labels,
+                    sample_count=seg_waveform.shape[0],
+                    start_time=segment_start,
+                    events=segment_events,
+                    nrv_header=nrv_header,
+                )
+        logger.info(
+            "Converted %s → %s (split into %d segments)",
+            input_path.name,
+            resolved_output.name,
+            len(segments),
+        )
+        return _segment_output_path(resolved_output, 0, len(segments))
 
     if resample_to is not None and (mixed_across_channels or mixed_over_time):
         if status_cb:
@@ -811,13 +991,11 @@ def convert_file(
             waveform = _resample_waveform(waveform, float(fs), float(resample_to))
             fs = float(resample_to)
 
-    patient_meta = _select_patient_metadata(input_path, patient_rules)
     adjusted_events = _adjust_events_for_gaps(
         nrv_header.Events, nrv_header.Segments, nrv_header.startDateTime
     )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    resolved_output = Path(output_path) if output_path else _candidate_output_path(input_path, output_dir, input_root)
+    if vendor_style:
+        adjusted_events = _filter_vendor_events(adjusted_events)
     if status_cb:
         status_cb("write edf")
     write_edf(
@@ -931,6 +1109,8 @@ def main(argv: list[str] | None = None) -> int:
                 lowcut=getattr(args, "lowcut", None),
                 highcut=getattr(args, "highcut", None),
                 notch=getattr(args, "notch", None),
+                split_by_segment=bool(getattr(args, "split_by_segment", False)),
+                vendor_style=bool(getattr(args, "vendor_style", False)),
                 status_cb=status_cb,
             )
 
@@ -962,6 +1142,8 @@ def main(argv: list[str] | None = None) -> int:
                 lowcut=args.lowcut,
                 highcut=args.highcut,
                 notch=args.notch,
+                split_by_segment=bool(getattr(args, "split_by_segment", False)),
+                vendor_style=bool(getattr(args, "vendor_style", False)),
             )
             success += 1
         except Exception as exc:  # pragma: no cover - logged for CLI feedback

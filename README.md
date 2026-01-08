@@ -41,6 +41,8 @@ uv run --isolated --with rich nicolet-e2edf --ui
 | `--out` | Output directory for EDF files |
 | `--glob` | Filter pattern when input is a folder (e.g. `Patient1_*`) |
 | `--json-sidecar` | Also emit a `.json` with metadata (channels, events, etc.) |
+| `--split-by-segment` | Output one EDF per segment if the recording contains multiple segments |
+| `--vendor-style` | Suppress system events to better match vendor EDF exports |
 | `--resample-to` | Resample to a specific rate (Hz) |
 | `--lowcut` | High-pass filter cutoff in Hz (requires scipy) |
 | `--highcut` | Low-pass filter cutoff in Hz (requires scipy) |
@@ -55,6 +57,15 @@ uv run --isolated --with rich nicolet-e2edf --ui
 uv run --isolated --with scipy nicolet-e2edf \
     --in ./data --out ./edf_output \
     --lowcut 0.5 --highcut 35 --notch 50
+```
+
+**Vendor-style comparison example:**
+
+```bash
+# Match vendor-style exports (split per segment + suppress system events)
+uv run --isolated nicolet-e2edf \
+    --in /path/to/recording.e --out ./edf_output \
+    --split-by-segment --vendor-style --json-sidecar
 ```
 
 ## Viewing the Results
@@ -85,7 +96,7 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Events are written as EDF+ annotations
 - EVENTTYPEINFOGUID decoding is heuristic (not yet a deterministic parser)
 - Legacy `.eeg` support is experimental: some files convert, but signal data and channel labels can be unreliable.
-- Some legacy `.e` recordings store only numeric channel IDs (e.g., `1..64`) and require montage tables for meaningful names; we still need a consistent way to map these.
+- Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). In those cases even vendor EDF exports keep numeric labels, so this is expected unless an external montage mapping is available. We still need a consistent way to map these when the source provides it.
 
 ## Contributing
 

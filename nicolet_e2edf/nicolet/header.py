@@ -1002,20 +1002,17 @@ def _read_events(
                 decoded = annotation_raw.decode("utf-16le", errors="ignore") if annotation_raw else ""
                 if "\x00" in decoded:
                     decoded = decoded.split("\x00")[0]
-                annotation = decoded.strip() or None
+                cleaned = decoded.rstrip("\x00")
+                annotation = cleaned if cleaned.strip() else None
             
             label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
-            # Prefer richer photic labels when frequency text is present.
+            # Prefer keeping annotation text as-is for EDF+ compatibility.
             if label_text == "Photic" and annotation:
-                label = f"{label_text} - {annotation}"
-                annotation = None
+                label = ""
             if label_text == "Format change" and annotation:
-                label_text = "Forandring !"
-                label = f"{label_text} - {annotation}"
-                annotation = None
+                label = ""
             if label_text == "Recording Paused" and annotation:
-                label = f"{label_text} - {annotation}"
-                annotation = None
+                label = ""
             if label_text == "Event Comment" and annotation and not label:
                 label = annotation
                 annotation = None
@@ -1410,7 +1407,7 @@ def read_nervus_header(path: str | Path):
                 if event.GUID in event_type_info:
                     if event.IDStr == "UNKNOWN":
                         event.IDStr = event_type_info[event.GUID]
-                    if not event.label:
+                    if not event.label and event.IDStr == "UNKNOWN":
                         event.label = event_type_info[event.GUID]
         for event in events:
             if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):

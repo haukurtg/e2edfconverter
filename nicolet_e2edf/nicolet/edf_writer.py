@@ -175,7 +175,7 @@ def _format_event_tal(event: EventItem, recording_start: datetime) -> bytes:
     text = ": ".join(part for part in description_parts if part) or "Event"
     
     # TAL format: <onset><duration>\x14<annotation>\x14\x00
-    return f"{onset}{duration}\x14{text}\x14\x00".encode("ascii", "ignore")
+    return f"{onset}{duration}\x14{text}\x14\x00".encode("utf-8", "ignore")
 
 
 def _build_annotation_signal(tal_bytes: bytes, annotation_samples: int) -> np.ndarray:
