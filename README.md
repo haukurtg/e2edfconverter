@@ -2,7 +2,7 @@
 
 <img src="docs/logo.png" alt="Logo" width="200">
 
-A Python tool to convert Nicolet/Nervus `.e` (the older `.eeg` is a work in progress!) EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!), just Python! I couldn't find a native Python way to get `.e` files out of their vendor format, so me and Opus 4.5 wrote this.
+A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!), just Python! I couldn't find a native Python way to get `.e` files out of their vendor format, so me and Opus 4.5 wrote this.
 
 > **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Since then, we've added substantial GUID/event parsing through our own reverse‑engineering work. Thank you to the FieldTrip team!
 
@@ -93,7 +93,7 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
 - Events are written as EDF+ annotations
 - EVENTTYPEINFOGUID decoding is reverse‑engineered/heuristic (not a vendor‑spec parser)
-- Legacy `.eeg` support is experimental: some files convert, but signal data and channel labels can be unreliable.
+- `.eeg` support is **experimental and not prioritized**: some files may convert, but signal data and channel labels can be unreliable. Treat `.eeg` as work-in-progress.
 - Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). In those cases even vendor EDF exports keep numeric labels, so this is expected unless an external montage mapping is available. We still need a consistent way to map these when the source provides it.
 
 ## Contributing
