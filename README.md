@@ -80,15 +80,13 @@ uv run --isolated --with mne python inspect_edf.py ./edf_output/Patient1.edf
 
 Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless systems).
 
-## What's new (0.2.0)
+## Recent changes
 
-- Legacy (pre-2012 Nervus) support for signals + basic annotations
-- Expanded event GUID coverage plus annotation/event-comment text extraction
-- Per-segment TSInfo parsing, channel on/off handling, and EEG offset support
-- Montage, patient, signal, and channel metadata parsing improvements
-- Optional mixed-rate handling via `--resample-to` (include all channels)
-- Segment-aware resampling if sampling rates change across segments
-- Event parsing robustness (2nd Events section offset + corruption guard)
+- `--split-by-segment` to export one EDF per segment when recordings contain multiple segments
+- `--vendor-style` to suppress system events for closer vendor-export parity
+- Improved EVENTTYPEINFOGUID label recovery (avoids garbled Unicode labels)
+- UTF-8 TAL encoding for EDF+ annotations (preserves non-ASCII text)
+- Safer event label handling to avoid overwriting known GUID labels
 
 ## Limitations
 
