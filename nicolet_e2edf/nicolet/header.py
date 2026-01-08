@@ -1070,7 +1070,21 @@ def _looks_like_label(text: str) -> bool:
     return letters >= 3 and printable / max(len(text), 1) > 0.6
 
 
-def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 512, max_chars: int = 64) -> str | None:
+def _is_latinish(text: str) -> bool:
+    for ch in text:
+        code = ord(ch)
+        if code < 32:
+            return False
+        if code <= 126:
+            continue
+        # Allow Latin-1 Supplement and Latin Extended-A/B.
+        if 0x00A0 <= code <= 0x024F:
+            continue
+        return False
+    return True
+
+
+def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 2048, max_chars: int = 64) -> str | None:
     end_limit = min(len(buffer), start + max_scan)
     for offset in range(start, end_limit, 2):
         end = offset
@@ -1083,8 +1097,11 @@ def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 512, max_chars:
         if end == offset:
             continue
         text = _decode_utf16(buffer[offset:end])
-        if _looks_like_label(text):
-            return text
+        if not _looks_like_label(text):
+            continue
+        if not _is_latinish(text):
+            continue
+        return text
     return None
 
 
