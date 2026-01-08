@@ -92,7 +92,7 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 
 - Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
 - Events are written as EDF+ annotations
-- EVENTTYPEINFOGUID decoding is heuristic (not yet a deterministic parser)
+- EVENTTYPEINFOGUID decoding is reverse‑engineered/heuristic (not a vendor‑spec parser)
 - Legacy `.eeg` support is experimental: some files convert, but signal data and channel labels can be unreliable.
 - Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). In those cases even vendor EDF exports keep numeric labels, so this is expected unless an external montage mapping is available. We still need a consistent way to map these when the source provides it.
 
