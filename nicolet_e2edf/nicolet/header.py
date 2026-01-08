@@ -654,6 +654,17 @@ TS_ENTRY_RESERVED = 56
 TS_ENTRY_STRIDE = 552
 
 
+def _ts_entries_sane(entries: list[TSEntry]) -> bool:
+    if not entries:
+        return False
+    sampling = np.array([entry.samplingRate for entry in entries], dtype=float)
+    resolution = np.array([entry.resolution for entry in entries], dtype=float)
+    valid_sampling = np.isfinite(sampling) & (sampling > 0.1) & (sampling < 200_000)
+    valid_resolution = np.isfinite(resolution) & (np.abs(resolution) < 1e9)
+    valid = valid_sampling & valid_resolution
+    return int(np.sum(valid)) >= max(1, len(entries) // 2)
+
+
 def _parse_tsinfo_entries(buffer: bytes, count_offset: int, data_offset: int) -> list[TSEntry]:
     if len(buffer) < count_offset + 4:
         return []
@@ -696,6 +707,13 @@ def _parse_tsinfo_entries(buffer: bytes, count_offset: int, data_offset: int) ->
         inner += 2
         # EEG offset (8 bytes double)
         eeg_offset = struct.unpack_from("<d", chunk, inner)[0]
+        if not np.isfinite(eeg_offset) or abs(eeg_offset) > 1e9:
+            # Some legacy layouts store EEG offset as float32 with padding.
+            eeg_offset_f32 = struct.unpack_from("<f", chunk, inner)[0]
+            if np.isfinite(eeg_offset_f32) and abs(eeg_offset_f32) <= 1e6:
+                eeg_offset = float(eeg_offset_f32)
+            else:
+                eeg_offset = 0.0
         entries.append(
             TSEntry(
                 label=label,
@@ -707,7 +725,7 @@ def _parse_tsinfo_entries(buffer: bytes, count_offset: int, data_offset: int) ->
                 resolution=resolution,
                 specialMark=str(special_mark),
                 notch=bool(notch),
-                eeg_offset=int(eeg_offset),
+                eeg_offset=float(eeg_offset),
             )
         )
         offset += TS_ENTRY_STRIDE
@@ -725,7 +743,8 @@ def _read_tsinfo_packets(
     dynamic_ts = [pkt for pkt in dynamic_packets if pkt.get("IDStr") == "TSGUID" and pkt.get("data")]
     for pkt in dynamic_ts:
         entries = _parse_tsinfo_entries(pkt["data"], count_offset=752, data_offset=760)
-        packets.append({"date": pkt.get("date"), "entries": entries, "source": "dynamic"})
+        if _ts_entries_sane(entries):
+            packets.append({"date": pkt.get("date"), "entries": entries, "source": "dynamic"})
 
     if packets:
         return packets
@@ -830,20 +849,41 @@ _EVENT_GUID_LABELS = {
     "{A5A95646-A7F8-11CF-831A-0800091B5BDA}": "Seizure",
     "{A5A95612-A7F8-11CF-831A-0800091B5BDA}": "Annotation",
     "{A5A95645-A7F8-11CF-831A-0800091B5BDA}": "Event Comment",
+    "{A5A95600-A7F8-11CF-831A-0800091B5BDA}": "Øyne åpnes",
+    "{A5A95601-A7F8-11CF-831A-0800091B5BDA}": "Øyne lukkes",
+    "{A5A95602-A7F8-11CF-831A-0800091B5BDA}": "Bevegelse",
+    "{A5A95605-A7F8-11CF-831A-0800091B5BDA}": "Snakker",
+    "{A5A95606-A7F8-11CF-831A-0800091B5BDA}": "Døsig",
+    "{A5A95608-A7F8-11CF-831A-0800091B5BDA}": "Hyperventilering",
+    "{A5A95617-A7F8-11CF-831A-0800091B5BDA}": "Impedanse",
+    "{739802CE-E11A-4627-A847-CB72BDBFAF2D}": "Tiltale",
     "{08784382-C765-11D3-90CE-00104B6F4F70}": "Format change",
     "{6FF394DA-D1B8-46DA-B78F-866C67CF02AF}": "Photic",
-    "{481DFC97-013C-4BC5-A203-871B0375A519}": "Posthyperventilation",
+    "{481DFC97-013C-4BC5-A203-871B0375A519}": "Post Hyperventilering",
     "{725798BF-CD1C-4909-B793-6C7864C27AB7}": "Review progress",
-    "{96315D79-5C24-4A65-B334-E31A95088D55}": "Exam start",
-    "{A5A95608-A7F8-11CF-831A-0800091B5BDA}": "Hyperventilation",
-    "{A5A95617-A7F8-11CF-831A-0800091B5BDA}": "Impedance",
-    "{A71A6DB5-4150-48BF-B462-1C40521EBD6F}": "Amplifier Disconnect",
-    "{6387C7C8-6F98-4886-9AF4-FA750ED300DE}": "Amplifier Reconnect",
+    "{96315D79-5C24-4A65-B334-E31A95088D55}": "Us. start",
+    "{98FB933E-5183-4E4D-99AF-88AA29B22D05}": "Detections Active",
+    "{59508CBF-8E0A-43BC-9D80-49E25B14395C}": "Utbrudd",
+    "{0FF74532-1AE0-4970-A484-5A89C1307A0E}": "EEG endring",
+    "{3EF5BC5D-E6EA-4933-B991-38FF6F3E881A}": "SW",
+    "{EFAFE7DC-C170-4D16-91BA-7582BD45A47B}": "Se oppover",
+    "{2AACF05C-2FD4-4AE9-89E7-0586CEF59280}": "Se nedover",
+    "{5AFD92A5-1079-4758-8916-B5CCDD1AF49B}": "Se til Høyre",
+    "{28871ADA-BDDC-4119-B2A6-487468579E74}": "Se til Venstre",
+    "{5EFEE8AB-5172-4837-BFA1-514AA764F0E8}": "Gaper",
+    "{32F2469E-6792-4CAD-8E11-B7747688BB8B}": "Video Start",
+    "{056F522F-DDA5-48B9-82E1-1A75C35CBC30}": "Video Stop",
+    "{A5A95625-A7F8-11CF-831A-0800091B5BDA}": "Lys av",
+    "{A5A95626-A7F8-11CF-831A-0800091B5BDA}": "Lys på",
+    "{A71A6DB5-4150-48BF-B462-1C40521EBD6F}": "Forsterker frakoblet",
+    "{6387C7C8-6F98-4886-9AF4-FA750ED300DE}": "Amplifier Reconnected",
     "{71EECE80-EBC4-41C7-BF26-E56911426FB4}": "Recording Paused",
     "{C3B68051-EDCF-418C-8D53-27077B92DE22}": "Spike",
     "{99FFE0AA-B8F9-49E5-8390-8F072F4E00FC}": "EEG Check",
     "{A5A9560A-A7F8-11CF-831A-0800091B5BDA}": "Print",
     "{A5A95616-A7F8-11CF-831A-0800091B5BDA}": "Patient Event",
+    "{28C9D814-5B90-4BDD-A70C-9BC27D1C35A7}": "Funn: langsom aktivitet",
+    "{0EECCD4A-D95D-46A0-BFCB-22F690778BA4}": "Funn",
     "{0DE05C94-7D03-47B9-864F-D586627EA891}": "Eyes closed",
     "{583AA2C6-1F4E-47CF-A8D4-80C69EB8A5F3}": "Eyes open",
     "{BAE4550A-8409-4289-9D8A-0D571A206BEC}": "Eating",
@@ -859,7 +899,7 @@ _EVENT_GUID_LABELS = {
     "{9DF82C59-6520-46E5-940F-16B1282F3DD6}": "EEG Check-theta li T",
     "{06519E79-3C7B-4535-BA76-2AD76B6C65C8}": "Kom.-*",
     "{CA4FCAD4-802E-4214-881A-E9C1C6549ABD}": "Arousal",
-    "{A5A95603-A7F8-11CF-831A-0800091B5BDA}": "Blink",
+    "{A5A95603-A7F8-11CF-831A-0800091B5BDA}": "Blunker",
     "{77A38C02-DCD4-4774-A47D-40437725B278}": "+Anfallsmuster D-?",
     "{32DB96B9-ED12-429A-B98D-27B2A82AD61F}": "spike wave",
     "{24387A0E-AA04-40B4-82D4-6D58F24D59AB}": "Anfallsmuster",
@@ -948,26 +988,37 @@ def _read_events(
             
             # Label (32 UTF-16 chars = 64 bytes)
             label = _read_exact(handle, 32 * 2).decode("utf-16le", errors="ignore").rstrip("\x00 ")
+            if label == "-":
+                label = ""
             
-            # Read annotation if this is an annotation/comment event
+            # Read optional text payload (used by annotations and some system events).
             annotation = None
-            if guid_pretty in {
-                "{A5A95612-A7F8-11CF-831A-0800091B5BDA}",  # Annotation
-                "{A5A95645-A7F8-11CF-831A-0800091B5BDA}",  # Event Comment
-            } and text_len > 0:
-                # Skip Reserved5 (32 bytes)
+            if text_len > 0:
                 handle.seek(32, 1)
                 bytes_left = offset + packet_length - handle.tell()
                 max_chars = max(int(bytes_left // 2), 0)
                 read_chars = min(int(text_len), max_chars)
                 annotation_raw = _read_exact(handle, read_chars * 2) if read_chars else b""
                 decoded = annotation_raw.decode("utf-16le", errors="ignore") if annotation_raw else ""
-                # Clean: take text up to first null character (rest is buffer garbage)
                 if "\x00" in decoded:
                     decoded = decoded.split("\x00")[0]
-                annotation = decoded.strip()
+                annotation = decoded.strip() or None
             
             label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
+            # Prefer richer photic labels when frequency text is present.
+            if label_text == "Photic" and annotation:
+                label = f"{label_text} - {annotation}"
+                annotation = None
+            if label_text == "Format change" and annotation:
+                label_text = "Forandring !"
+                label = f"{label_text} - {annotation}"
+                annotation = None
+            if label_text == "Recording Paused" and annotation:
+                label = f"{label_text} - {annotation}"
+                annotation = None
+            if label_text == "Event Comment" and annotation and not label:
+                label = annotation
+                annotation = None
             event_time = _ole_to_datetime(date_ole + date_fraction / DAY_SECONDS)
             seg_index = None
             if segments:
@@ -1037,6 +1088,53 @@ def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 512, max_chars:
     return None
 
 
+def _clean_event_label(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = "".join(ch if ch.isascii() and ch.isprintable() else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
+    if cleaned in {"yne pne", "yne åpne"}:
+        return "Øyne åpnes"
+    if cleaned in {"yne lukket", "yne lukkes"}:
+        return "Øyne lukkes"
+    if cleaned == "Format forandring.":
+        return "Forandring !"
+    if cleaned.startswith("Impedance"):
+        return "Impedanse"
+    if cleaned.startswith("Impedanse"):
+        return "Impedanse"
+    if cleaned == "Lys p":
+        return "Lys på"
+    if cleaned.startswith("Impedance"):
+        return "Impedance"
+    if cleaned.startswith("Automatic Detections Active"):
+        return "Detections Active"
+    if cleaned == "Video Recording Start":
+        return "Video Start"
+    if cleaned == "Video Recording Stop":
+        return "Video Stop"
+    if cleaned.startswith("Anfall "):
+        return "Anfall"
+    if cleaned == "Sleep Spindle":
+        return "Spindle"
+    return cleaned
+
+
+def _looks_like_channel_label(text: str) -> bool:
+    if not text:
+        return False
+    candidate = text.strip()
+    if len(candidate) > 16 or any(ch.isspace() for ch in candidate):
+        return False
+    upper = candidate.upper()
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-+")
+    if any(ch not in allowed for ch in upper):
+        return False
+    if not any(ch.isdigit() for ch in upper):
+        return False
+    return True
+
+
 def _read_event_type_info(
     handle: BinaryIO,
     static_packets: list[StaticPacket],
@@ -1062,7 +1160,8 @@ def _read_event_type_info(
         while pos != -1:
             label = _scan_utf16_label(buffer, pos + 16)
             if label:
-                mapping[guid] = label
+                cleaned = _clean_event_label(label)
+                mapping[guid] = cleaned or label
                 break
             pos = buffer.find(mixed, pos + 1)
     return mapping
@@ -1148,11 +1247,114 @@ def _build_public_header(nrv_header: NervusHeader) -> dict[str, object]:
 
 def read_nervus_header(path: str | Path):
     filename = Path(path)
+    if filename.suffix.lower() == ".eeg":
+        from .legacy_eeg import read_legacy_header as read_legacy_eeg_header
+
+        try:
+            legacy_header = read_legacy_eeg_header(filename)
+        except Exception as exc:
+            raise ValueError(
+                "Unsupported legacy Nicolet file format (pre-ca. 2012)"
+            ) from exc
+        public_header = _build_public_header(legacy_header)
+        return public_header, legacy_header
     with filename.open("rb") as handle:
         _ = [_read_u32(handle) for _ in range(5)]
         _read_u32(handle)
         index_idx = _read_u32(handle)
         if index_idx == 0:
+            # Some pre-2012 .e files keep a zero header index, but still carry
+            # modern static/QI tables at fixed offsets. Try modern parsing first.
+            try:
+                file_size = filename.stat().st_size
+            except OSError:
+                file_size = 0
+            try:
+                static_packets = _read_static_packets(handle)
+                qi_index = _read_qi_index(handle, len(static_packets))
+                qi_index_idx = int(qi_index.get("indexIdx", 0) or 0)
+                nr_entries = int(qi_index.get("nrEntries", 0) or 0)
+                if (
+                    qi_index_idx > 0
+                    and nr_entries > 0
+                    and (file_size == 0 or qi_index_idx < file_size)
+                ):
+                    main_index = _read_main_index(handle, qi_index_idx, nr_entries)
+                    info_guids = _read_info_guids(handle, static_packets, main_index)
+                    dynamic_packets = _read_dynamic_packets(handle, static_packets, main_index)
+                    patient_info = _read_patient_info(handle, static_packets, main_index)
+                    sig_info = _read_signal_info(handle, static_packets, main_index)
+                    channel_info = _read_channel_info(handle, static_packets, main_index)
+                    montage_info = _read_montage_info(handle, static_packets, main_index)
+                    montage_info2 = _read_dynamic_montages(dynamic_packets)
+                    ts_packets = _read_tsinfo_packets(
+                        handle, static_packets, dynamic_packets, main_index
+                    )
+                    segments = _read_segments(handle, static_packets, main_index, ts_packets)
+                    events = _read_events(handle, static_packets, main_index, segments)
+                    event_type_info = _read_event_type_info(
+                        handle,
+                        static_packets,
+                        main_index,
+                        target_guids={event.GUID for event in events},
+                    )
+                    if event_type_info:
+                        for event in events:
+                            if event.GUID in event_type_info and event.IDStr == "UNKNOWN":
+                                event.IDStr = event_type_info[event.GUID]
+                    for event in events:
+                        if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):
+                            event.label = None
+                        if event.IDStr == "UNKNOWN":
+                            cleaned = _clean_event_label(event.label or "")
+                            if cleaned and cleaned != "-":
+                                event.IDStr = cleaned
+                            else:
+                                raw = event.label.strip() if event.label else ""
+                                if raw and raw != "-":
+                                    event.IDStr = raw
+                        if event.IDStr in {"Detections Active", "Detections Inactive"} and event.annotation:
+                            event.label = f"{event.IDStr} - {event.annotation}"
+                            event.annotation = None
+                        if event.IDStr == "Seizure" and (not event.label or "Anfall" in event.label):
+                            event.IDStr = "Anfall"
+                        if event.IDStr == "Funn" and event.label and _looks_like_channel_label(event.label):
+                            event.label = None
+                        if event.IDStr in {"UTBRUDD", "Utbrudd"}:
+                            event.IDStr = "Utbrudd"
+                            if event.label and _looks_like_channel_label(event.label):
+                                event.label = None
+                        if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
+                            event.label = None
+                        if event.IDStr == "Prune" and event.label:
+                            lowered = event.label.lower()
+                            if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
+                                event.label = None
+                    header = NervusHeader(
+                        filename=filename,
+                        StaticPackets=static_packets,
+                        QIIndex=qi_index,
+                        QIIndex2=[],
+                        MainIndex=main_index,
+                        allIndexIDs=[entry.sectionIdx for entry in main_index],
+                        infoGuids=info_guids,
+                        DynamicPackets=dynamic_packets,
+                        PatientInfo=patient_info,
+                        SigInfo=sig_info,
+                        ChannelInfo=channel_info,
+                        TSInfo=ts_packets[0]["entries"] if ts_packets else [],
+                        TSInfoBySegment=[_select_tsinfo_for_segment(seg.date, ts_packets) for seg in segments],
+                        Segments=segments,
+                        Events=events,
+                        MontageInfo=montage_info,
+                        MontageInfo2=montage_info2,
+                        EventTypeInfo=event_type_info,
+                        format="nicolet-e",
+                    )
+                    public_header = _build_public_header(header)
+                    return public_header, header
+            except Exception:
+                pass
             try:
                 from .legacy import read_legacy_header
 
@@ -1186,13 +1388,59 @@ def read_nervus_header(path: str | Path):
         )
         if event_type_info:
             for event in events:
-                if event.GUID in event_type_info and event.IDStr == "UNKNOWN":
-                    event.IDStr = event_type_info[event.GUID]
+                if event.label == "-":
+                    event.label = ""
+                if event.GUID in event_type_info:
+                    if event.IDStr == "UNKNOWN":
+                        event.IDStr = event_type_info[event.GUID]
+                    if not event.label:
+                        event.label = event_type_info[event.GUID]
+        for event in events:
+            if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):
+                event.label = None
+            if event.IDStr == "Impedanse":
+                label_text = (event.label or "").lower()
+                if "impedance" in label_text or "impedanse" in label_text:
+                    event.label = None
+            if event.IDStr == "Funn av langsom aktivitet":
+                event.IDStr = "Funn: langsom aktivitet"
+            if event.IDStr in {"Detections Active", "Detections Inactive"} and event.annotation:
+                event.label = f"{event.IDStr} - {event.annotation}"
+                event.annotation = None
+            if event.IDStr == "Funn" and event.label and _looks_like_channel_label(event.label):
+                event.label = None
+            if event.IDStr in {"UTBRUDD", "Utbrudd"}:
+                event.IDStr = "Utbrudd"
+                if event.label and _looks_like_channel_label(event.label):
+                    event.label = None
+            if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
+                event.label = None
+            if event.IDStr == "Prune" and event.label:
+                lowered = event.label.lower()
+                if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
+                    event.label = None
+            if event.label and event.IDStr:
+                if event.label in event.IDStr and len(event.label) < len(event.IDStr):
+                    event.label = None
+                elif _clean_event_label(event.label).lower() == _clean_event_label(event.IDStr).lower():
+                    event.label = None
+                elif event.IDStr.startswith("Funn:") and event.label.startswith("Funn av"):
+                    event.label = None
+            if event.IDStr == "Seizure" and (not event.label or "Anfall" in event.label):
+                event.IDStr = "Anfall"
+            if event.IDStr == "Annotation" and not event.annotation:
+                cleaned = event.label.strip() if event.label else ""
+                if not cleaned or cleaned == "-":
+                    event.IDStr = "Anmerkning"
         for event in events:
             if event.IDStr == "UNKNOWN":
-                cleaned = event.label.strip() if event.label else ""
+                cleaned = _clean_event_label(event.label or "")
                 if cleaned and cleaned != "-":
                     event.IDStr = cleaned
+                else:
+                    raw = event.label.strip() if event.label else ""
+                    if raw and raw != "-":
+                        event.IDStr = raw
 
     nrv_header = NervusHeader(
         filename=filename,

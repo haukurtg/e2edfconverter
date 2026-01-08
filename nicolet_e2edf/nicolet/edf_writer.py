@@ -294,6 +294,10 @@ def write_edf(
     if n_samples == 0 or sfreq <= 0:
         raise ValueError("Sampling frequency and data must be non-zero")
 
+    # Guard against NaN/Inf from upstream scaling to keep EDF ranges finite.
+    if not np.isfinite(data_uV).all():
+        data_uV = np.where(np.isfinite(data_uV), data_uV, 0.0)
+
     patient_meta = patient_meta or {}
     start = recording_start or datetime.utcnow()
     

@@ -55,6 +55,9 @@ def _read_str(handle, size: int) -> str:
 def _normalize_year(year: int) -> int:
     if year < 100:
         return 2000 + year if year < 70 else 1900 + year
+    if year < 1900:
+        # Some legacy files store years as 100-based offsets (e.g., 103 -> 2003).
+        return 2000 + (year - 100) if year <= 130 else 1900 + (year - 100)
     return year
 
 
@@ -339,7 +342,7 @@ def read_legacy_header(path: str | Path) -> NervusHeader:
             "dataStart": data_start,
             "conv": conv.tolist(),
         },
-        format="nervus-legacy-e",
+        format="nervus-eeg",
         startDateTime=start_dt,
     )
     return nrv_header

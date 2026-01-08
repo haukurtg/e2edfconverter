@@ -99,6 +99,10 @@ def read_nervus_data(
     """Read waveform data from a Nicolet/Nervus recording."""
 
     if header.format == "nervus-eeg":
+        from .legacy_eeg import read_legacy_data
+
+        return read_legacy_data(path, header, channels=channels, begsample=begsample, endsample=endsample)
+    if header.format == "nervus-legacy-e":
         from .legacy import read_legacy_data
 
         return read_legacy_data(path, header, channels=channels, begsample=begsample, endsample=endsample)
@@ -165,6 +169,8 @@ def read_nervus_data(
                 offset = 0.0
                 if segment.eegOffset is not None and channel_zb < len(segment.eegOffset):
                     offset = float(segment.eegOffset[channel_zb])
+                    if not np.isfinite(offset) or abs(offset) > 1e9:
+                        offset = 0.0
                 count = min(raw.size, samples_to_copy)
                 data[ch_idx, relative_start : relative_start + count] = raw[:count] * scale + offset
                 if raw.size < samples_to_copy:

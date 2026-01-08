@@ -2,11 +2,11 @@
 
 <img src="docs/logo.png" alt="Logo" width="200">
 
-A Python tool to convert Nicolet/Nervus `.e` (and legacy `.eeg`) EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!) — just Python 3.10+ and NumPy.
+A Python tool to convert Nicolet/Nervus `.e` (the older `.eeg` is a work in progress!) EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!), just Python! I couldn't find a native Python way to get `.e` files out of their vendor format, so me and Opus 4.5. 😎 wrote this.
 
-I couldn't find a native Python way to get `.e` files out of their vendor bubble, so I wrote this. Maybe it helps you too.
+> **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Since then, we've added substantial GUID/event parsing through our own reverse‑engineering work. Thank you to the FieldTrip team!
 
-> **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Thank you to the FieldTrip team!
+> **Note**: Some of our reverse‑engineered event labels are (unfortunately) in Norwegian — working on making that cleaner. 😅
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 
 ## What's new (0.2.0)
 
-- Legacy `.eeg` (pre-2012 Nervus) support for signals + basic annotations
+- Legacy (pre-2012 Nervus) support for signals + basic annotations
 - Expanded event GUID coverage plus annotation/event-comment text extraction
 - Per-segment TSInfo parsing, channel on/off handling, and EEG offset support
 - Montage, patient, signal, and channel metadata parsing improvements
@@ -84,12 +84,8 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
 - Events are written as EDF+ annotations
 - EVENTTYPEINFOGUID decoding is heuristic (not yet a deterministic parser)
-
-## Notes
-
-- Legacy detection is based on file header layout (`indexIdx == 0`), not file extension.
-- For corpus-level diagnostics (channels/segments/events/unknown GUIDs), use:
-  - `./.venv/bin/python nicolet_e2edf/tools/scan_corpus.py --root EEG_test_files/eeg_files --pattern "**/*.e"`
+- Legacy `.eeg` support is experimental: some files convert, but signal data and channel labels can be unreliable.
+- Some legacy `.e` recordings store only numeric channel IDs (e.g., `1..64`) and require montage tables for meaningful names; we still need a consistent way to map these.
 
 ## Contributing
 

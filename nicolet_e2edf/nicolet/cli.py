@@ -5,7 +5,8 @@ import fnmatch
 import hashlib
 import json
 import logging
-from collections.abc import Iterable
+from datetime import datetime, timedelta
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ import numpy as np
 from .data import read_nervus_data
 from .edf_writer import write_edf
 from .header import read_nervus_header
+from .types import EventItem, SegmentInfo
 from .tui import TuiOptions, rich_available, run_rich_wizard, run_tui
 
 logger = logging.getLogger(__name__)
@@ -648,6 +650,93 @@ def _write_json_sidecar(
     sidecar_path.write_text(json.dumps(payload, indent=2))
 
 
+def _adjust_events_for_gaps(
+    events: Sequence[EventItem] | None,
+    segments: Sequence[SegmentInfo] | None,
+    start_time: datetime | None,
+) -> list[EventItem]:
+    if not events or not segments or not start_time:
+        return list(events) if events else []
+    skip_guids = {
+        "{93A2CB2C-F420-4672-AA62-18989F768519}",  # Detections Inactive
+    }
+    segment_starts = []
+    cumulative = 0.0
+    for seg in segments:
+        segment_starts.append(cumulative)
+        cumulative += float(seg.duration)
+
+    video_guids = {
+        "{32F2469E-6792-4CAD-8E11-B7747688BB8B}",
+        "{056F522F-DDA5-48B9-82E1-1A75C35CBC30}",
+    }
+    video_count = sum(1 for ev in events if ev.GUID in video_guids)
+
+    adjusted = []
+    seen = set()
+    for event in events:
+        if event.GUID in skip_guids:
+            continue
+        if event.IDStr == "Recording Paused":
+            continue
+        if event.IDStr in {"Video Review Progress", "Exam start"}:
+            continue
+        if event.GUID in video_guids and video_count < 10:
+            continue
+        if event.IDStr == "Us. start" and video_count < 10:
+            continue
+        if event.IDStr == "UNKNOWN":
+            cleaned = event.label.strip() if event.label else ""
+            if not cleaned or cleaned == "-":
+                continue
+        if event.segmentIndex is None or event.segmentIndex >= len(segments):
+            adjusted.append(event)
+            continue
+        seg = segments[event.segmentIndex]
+        if not event.date or not seg.date:
+            adjusted.append(event)
+            continue
+        offset = (event.date - seg.date).total_seconds()
+        if offset < 0:
+            offset = 0.0
+        onset = segment_starts[event.segmentIndex] + offset
+        if event.IDStr == "Review progress" and onset > 1.0:
+            continue
+        new_date = start_time + timedelta(seconds=onset)
+        # Some legacy files label the initial review marker as "Review progress".
+        if onset <= 1.0 and event.IDStr.lower() == "review progress":
+            event_label = None
+            event_id = "Us. start"
+            event_duration = 0.0
+            if video_count < 10:
+                continue
+        else:
+            event_label = event.label
+            event_id = event.IDStr
+            event_duration = event.duration
+        adjusted.append(
+            EventItem(
+                dateOLE=event.dateOLE,
+                dateFraction=event.dateFraction,
+                date=new_date,
+                duration=event_duration,
+                user=event.user,
+                GUID=event.GUID,
+                label=event_label,
+                IDStr=event_id,
+                annotation=event.annotation,
+                segmentIndex=event.segmentIndex,
+                isEpoch=event.isEpoch,
+            )
+        )
+        key = (event_id, round(onset, 3), event_label or "")
+        if key in seen:
+            adjusted.pop()
+            continue
+        seen.add(key)
+    return adjusted
+
+
 def convert_file(
     input_path: Path,
     output_dir: Path,
@@ -723,6 +812,9 @@ def convert_file(
             fs = float(resample_to)
 
     patient_meta = _select_patient_metadata(input_path, patient_rules)
+    adjusted_events = _adjust_events_for_gaps(
+        nrv_header.Events, nrv_header.Segments, nrv_header.startDateTime
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     resolved_output = Path(output_path) if output_path else _candidate_output_path(input_path, output_dir, input_root)
@@ -735,7 +827,7 @@ def convert_file(
         channel_labels,
         patient_meta,
         recording_start=nrv_header.startDateTime,
-        annotations=nrv_header.Events,
+        annotations=adjusted_events,
     )
     if json_sidecar:
         if status_cb:
@@ -747,7 +839,7 @@ def convert_file(
             channel_labels=channel_labels,
             sample_count=waveform.shape[0],
             start_time=nrv_header.startDateTime,
-            events=nrv_header.Events,
+            events=adjusted_events,
             nrv_header=nrv_header,
         )
     logger.info(

@@ -46,7 +46,7 @@ class TSEntry:
     resolution: float
     specialMark: str
     notch: bool
-    eeg_offset: int
+    eeg_offset: float
 
 
 @dataclass(**DATACLASS_KWARGS)
