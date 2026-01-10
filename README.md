@@ -82,10 +82,8 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 
 ## Limitations
 
-- Mixed sampling rates: default exports only dominant-rate channels; use `--resample-to` to include all "on" channels.
-- Resampling uses `scipy.signal.resample_poly` (polyphase FIR).
-- Possible future mode: resample off-rate channels to the dominant rate (or to the max rate) instead of excluding them.
-- Edge case: if a non-dominant channel has a higher sampling rate than the EEG channels, resampling everything to the dominant rate would downsample that channel.
+- Mixed sampling rates: default exports only dominant-rate channels; use `--resample-to` to include all "on" channels (future: resample off-rate channels to dominant/max instead of excluding).
+- Edge case (future dominant-rate resample mode): if a minority channel has a higher sampling rate, resampling to the dominant rate would downsample it.
 - Events are written as EDF+ annotations
 - EVENTTYPEINFOGUID labels are reverse-engineered; unknown GUIDs may be exported as UNKNOWN.
 - `.eeg` support is **experimental and not prioritized**: some files may convert, but signal data and channel labels can be unreliable. Treat `.eeg` as work-in-progress.
