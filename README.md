@@ -43,7 +43,7 @@ uv run --isolated --with rich nicolet-e2edf --ui
 | `--json-sidecar` | Also emit a `.json` with metadata (channels, events, etc.) |
 | `--split-by-segment` | Output one EDF per segment if the recording contains multiple segments |
 | `--vendor-style` | Suppress system events to better match vendor EDF exports |
-| `--resample-to` | Resample to a specific rate (Hz) |
+| `--resample-to` | Resample to a specific rate (Hz) (requires scipy) |
 | `--lowcut` | High-pass filter cutoff in Hz (requires scipy) |
 | `--highcut` | Low-pass filter cutoff in Hz (requires scipy) |
 | `--notch` | Notch filter for powerline noise, e.g. `50` or `60` Hz (requires scipy) |
@@ -80,19 +80,14 @@ uv run --isolated --with mne python inspect_edf.py ./edf_output/Patient1.edf
 
 Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless systems).
 
-## Recent changes
-
-- `--split-by-segment` to export one EDF per segment when recordings contain multiple segments
-- `--vendor-style` to suppress system events for closer vendor-export parity
-- Improved EVENTTYPEINFOGUID label recovery (avoids garbled Unicode labels)
-- UTF-8 TAL encoding for EDF+ annotations (preserves non-ASCII text)
-- Safer event label handling to avoid overwriting known GUID labels
-
 ## Limitations
 
-- Mixed sampling rates: the dominant rate is kept unless `--resample-to` is used
+- Mixed sampling rates: default exports only dominant-rate channels; use `--resample-to` to include all "on" channels.
+- Resampling uses `scipy.signal.resample_poly` (polyphase FIR).
+- Possible future mode: resample off-rate channels to the dominant rate (or to the max rate) instead of excluding them.
+- Edge case: if a non-dominant channel has a higher sampling rate than the EEG channels, resampling everything to the dominant rate would downsample that channel.
 - Events are written as EDF+ annotations
-- EVENTTYPEINFOGUID decoding is reverse‑engineered/heuristic (not a vendor‑spec parser)
+- EVENTTYPEINFOGUID labels are reverse-engineered; unknown GUIDs may be exported as UNKNOWN.
 - `.eeg` support is **experimental and not prioritized**: some files may convert, but signal data and channel labels can be unreliable. Treat `.eeg` as work-in-progress.
 - Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). In those cases even vendor EDF exports keep numeric labels, so this is expected unless an external montage mapping is available. We still need a consistent way to map these when the source provides it.
 

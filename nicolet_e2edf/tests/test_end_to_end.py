@@ -94,6 +94,7 @@ def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 
 def test_resample_and_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("scipy", reason="scipy required for resampling")
     fake_header = NervusHeader(filename=tmp_path / "case.e")
     fake_header.matchingChannels = [1]
     fake_header.targetSamplingRate = 128.0

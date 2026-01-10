@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+from fractions import Fraction
 from datetime import datetime, timedelta
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -60,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resample-to",
         type=float,
-        help="Optional sampling rate (Hz) to resample the output EDF to",
+        help="Optional sampling rate (Hz) to resample the output EDF to (requires scipy)",
     )
     parser.add_argument(
         "--lowcut",
@@ -262,6 +263,37 @@ def _sampling_rate_variation(header, channels: Iterable[int]) -> tuple[bool, boo
     return mixed_across_channels, mixed_over_time
 
 
+def _require_scipy_resample():
+    try:
+        from scipy.signal import resample_poly
+    except ImportError as exc:
+        raise RuntimeError(
+            "Resampling requires scipy. Install it with: uv pip install -p .venv scipy"
+        ) from exc
+    return resample_poly
+
+
+def _resample_ratio(source_len: int, target_len: int, max_den: int = 1000) -> tuple[int, int]:
+    if source_len <= 0 or target_len <= 0:
+        raise ValueError("Resample lengths must be positive")
+    ratio = target_len / source_len
+    fraction = Fraction(ratio).limit_denominator(max_den)
+    return fraction.numerator, fraction.denominator
+
+
+def _trim_or_pad(data: np.ndarray, target_len: int, *, axis: int = 0) -> np.ndarray:
+    current = data.shape[axis]
+    if current == target_len:
+        return data
+    if current > target_len:
+        slicer = [slice(None)] * data.ndim
+        slicer[axis] = slice(0, target_len)
+        return data[tuple(slicer)]
+    pad_width = [(0, 0)] * data.ndim
+    pad_width[axis] = (0, target_len - current)
+    return np.pad(data, pad_width, mode="constant")
+
+
 def _resample_waveform(waveform: np.ndarray, original_fs: float, target_fs: float) -> np.ndarray:
     if target_fs <= 0:
         raise ValueError("Resample rate must be positive")
@@ -271,13 +303,16 @@ def _resample_waveform(waveform: np.ndarray, original_fs: float, target_fs: floa
     n_samples, n_channels = waveform.shape
     duration_seconds = n_samples / float(original_fs)
     target_samples = max(int(round(duration_seconds * target_fs)), 1)
-    original_times = np.arange(n_samples, dtype=np.float64) / float(original_fs)
-    target_times = np.arange(target_samples, dtype=np.float64) / float(target_fs)
+    if waveform.size == 0:
+        return np.zeros((target_samples, n_channels), dtype=waveform.dtype)
+    if n_samples == 1:
+        return np.repeat(waveform, target_samples, axis=0).astype(waveform.dtype, copy=False)
 
-    resampled = np.zeros((target_samples, n_channels), dtype=waveform.dtype)
-    for idx in range(n_channels):
-        resampled[:, idx] = np.interp(target_times, original_times, waveform[:, idx])
-    return resampled
+    resample_poly = _require_scipy_resample()
+    up, down = _resample_ratio(n_samples, target_samples)
+    resampled = resample_poly(waveform, up, down, axis=0, padtype="reflect")
+    resampled = _trim_or_pad(resampled, target_samples, axis=0)
+    return resampled.astype(waveform.dtype, copy=False)
 
 
 def _resample_vector(
@@ -301,9 +336,11 @@ def _resample_vector(
         return np.zeros(target_samples, dtype=np.float32)
     if len(samples) == 1:
         return np.full(target_samples, float(samples[0]), dtype=np.float32)
-    original_times = np.arange(len(samples), dtype=np.float64) / float(original_fs)
-    target_times = np.arange(target_samples, dtype=np.float64) / float(target_fs)
-    return np.interp(target_times, original_times, samples).astype(np.float32)
+    resample_poly = _require_scipy_resample()
+    up, down = _resample_ratio(len(samples), target_samples)
+    resampled = resample_poly(samples, up, down, axis=0, padtype="reflect")
+    resampled = _trim_or_pad(resampled, target_samples, axis=0)
+    return resampled.astype(np.float32)
 
 
 def _segment_target_samples(header, target_fs: float) -> list[int]:
