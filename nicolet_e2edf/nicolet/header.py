@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import struct
+from io import BytesIO
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -922,13 +923,9 @@ def _read_events(
     segments: Sequence[SegmentInfo] | None = None,
 ) -> list[EventItem]:
     """Read events from the Events section.
-    
-    Each event is stored in its own packet with structure:
-    - 16 bytes: packet GUID (must match _EVENT_PACKET_GUID)
-    - 8 bytes: packet length
-    - 240 bytes: event marker data
-    
-    Events are read sequentially until a non-matching GUID is found.
+
+    Event data may span multiple main-index sections, so we first concatenate
+    all bytes that belong to the Events static packet and then parse packet-by-packet.
     """
     event_packet = _lookup_static(static_packets, tag="Events")
     if event_packet is None:
@@ -937,115 +934,118 @@ def _read_events(
     if not index_entries:
         return []
 
+    stream = bytearray()
+    for entry in index_entries:
+        if entry.sectionL <= 0:
+            continue
+        handle.seek(entry.offset, 0)
+        stream.extend(_read_exact(handle, entry.sectionL))
+    if not stream:
+        return []
+
+    stream_bytes = bytes(stream)
+    stream_len = len(stream_bytes)
+    buffer = BytesIO(stream_bytes)
     events: list[EventItem] = []
-    
-    # Start at the first event section
-    for entry_index, entry in enumerate(index_entries):
-        offset = entry.offset
-        if entry_index == 1:
-            offset += 248
-        section_end = entry.offset + entry.sectionL
-        
-        # Read packets sequentially until we hit a non-event GUID or section end
-        while offset < section_end:
-            handle.seek(offset, 0)
-            
-            # Read packet header: GUID (16 bytes) + length (8 bytes)
-            guid = _read_exact(handle, 16)
-            packet_length = _read_u64(handle)
-            
-            # Stop if this is not an event packet
-            if guid != _EVENT_PACKET_GUID:
+    offset = 0
+    while offset + 24 <= stream_len:
+        buffer.seek(offset, 0)
+        guid = _read_exact(buffer, 16)
+        packet_length = _read_u64(buffer)
+        if guid != _EVENT_PACKET_GUID:
+            next_offset = stream_bytes.find(_EVENT_PACKET_GUID, offset + 1)
+            if next_offset < 0:
                 break
-            if packet_length <= 0 or packet_length > section_end - offset or packet_length > 1_000_000:
+            offset = next_offset
+            continue
+        if packet_length < 240 or packet_length > 1_000_000 or offset + packet_length > stream_len:
+            next_offset = stream_bytes.find(_EVENT_PACKET_GUID, offset + 1)
+            if next_offset < 0:
                 break
-            if packet_length < 240:
-                break
-            
-            # Read ONE event from this packet
-            # Skip eventID (8 bytes, not used)
-            handle.seek(8, 1)
-            
-            date_ole = _read_double(handle)
-            date_fraction = _read_double(handle)
-            duration = _read_double(handle)
-            
-            # Skip 48 bytes reserved
-            handle.seek(48, 1)
-            
-            # User (12 UTF-16 chars = 24 bytes)
-            user_raw = _read_exact(handle, 12 * 2)
-            user = user_raw.decode("utf-16le", errors="ignore").rstrip("\x00 ")
-            
-            # Text length for annotations
-            text_len = _read_u64(handle)
-            
-            # Event type GUID
-            _guid_compact, guid_pretty = _mixed_endian_guid(_read_exact(handle, 16))
-            
-            # Skip Reserved4 (16 bytes)
-            handle.seek(16, 1)
-            
-            # Label (32 UTF-16 chars = 64 bytes)
-            label = _read_exact(handle, 32 * 2).decode("utf-16le", errors="ignore").rstrip("\x00 ")
-            if label == "-":
-                label = ""
-            
-            # Read optional text payload (used by annotations and some system events).
+            offset = next_offset
+            continue
+
+        # Skip eventID (8 bytes, not used)
+        buffer.seek(8, 1)
+
+        date_ole = _read_double(buffer)
+        date_fraction = _read_double(buffer)
+        duration = _read_double(buffer)
+
+        # Skip 48 bytes reserved
+        buffer.seek(48, 1)
+
+        # User (12 UTF-16 chars = 24 bytes)
+        user_raw = _read_exact(buffer, 12 * 2)
+        user = user_raw.decode("utf-16le", errors="ignore").rstrip("\x00 ")
+
+        # Text length for annotations
+        text_len = _read_u64(buffer)
+
+        # Event type GUID
+        _guid_compact, guid_pretty = _mixed_endian_guid(_read_exact(buffer, 16))
+
+        # Skip Reserved4 (16 bytes)
+        buffer.seek(16, 1)
+
+        # Label (32 UTF-16 chars = 64 bytes)
+        label = _read_exact(buffer, 32 * 2).decode("utf-16le", errors="ignore").rstrip("\x00 ")
+        if label == "-":
+            label = ""
+
+        # Read optional text payload (used by annotations and some system events).
+        annotation = None
+        if text_len > 0:
+            buffer.seek(32, 1)
+            bytes_left = offset + packet_length - buffer.tell()
+            max_chars = max(int(bytes_left // 2), 0)
+            read_chars = min(int(text_len), max_chars)
+            annotation_raw = _read_exact(buffer, read_chars * 2) if read_chars else b""
+            decoded = annotation_raw.decode("utf-16le", errors="ignore") if annotation_raw else ""
+            if "\x00" in decoded:
+                decoded = decoded.split("\x00")[0]
+            cleaned = decoded.rstrip("\x00")
+            annotation = cleaned if cleaned.strip() else None
+
+        label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
+        # Prefer keeping annotation text as-is for EDF+ compatibility.
+        if label_text == "Photic" and annotation:
+            label = ""
+        if label_text == "Format change" and annotation:
+            label = ""
+        if label_text == "Recording Paused" and annotation:
+            label = ""
+        if label_text == "Event Comment" and annotation and not label:
+            label = annotation
             annotation = None
-            if text_len > 0:
-                handle.seek(32, 1)
-                bytes_left = offset + packet_length - handle.tell()
-                max_chars = max(int(bytes_left // 2), 0)
-                read_chars = min(int(text_len), max_chars)
-                annotation_raw = _read_exact(handle, read_chars * 2) if read_chars else b""
-                decoded = annotation_raw.decode("utf-16le", errors="ignore") if annotation_raw else ""
-                if "\x00" in decoded:
-                    decoded = decoded.split("\x00")[0]
-                cleaned = decoded.rstrip("\x00")
-                annotation = cleaned if cleaned.strip() else None
-            
-            label_text = _EVENT_GUID_LABELS.get(guid_pretty, "UNKNOWN")
-            # Prefer keeping annotation text as-is for EDF+ compatibility.
-            if label_text == "Photic" and annotation:
-                label = ""
-            if label_text == "Format change" and annotation:
-                label = ""
-            if label_text == "Recording Paused" and annotation:
-                label = ""
-            if label_text == "Event Comment" and annotation and not label:
-                label = annotation
-                annotation = None
-            event_time = _ole_to_datetime(date_ole + date_fraction / DAY_SECONDS)
-            seg_index = None
-            if segments:
-                seg_index = 0
-                for idx, segment in enumerate(segments):
-                    if segment.date <= event_time:
-                        seg_index = idx
-                    else:
-                        break
-            is_epoch = duration > 0.0
-            
-            events.append(
-                EventItem(
-                    dateOLE=date_ole,
-                    dateFraction=date_fraction,
-                    date=event_time,
-                    duration=duration,
-                    user=user,
-                    GUID=guid_pretty,
-                    label=label,
-                    IDStr=label_text,
-                    annotation=annotation,
-                    segmentIndex=seg_index,
-                    isEpoch=is_epoch,
-                )
+        event_time = _ole_to_datetime(date_ole + date_fraction / DAY_SECONDS)
+        seg_index = None
+        if segments:
+            seg_index = 0
+            for idx, segment in enumerate(segments):
+                if segment.date and segment.date <= event_time:
+                    seg_index = idx
+                else:
+                    break
+        is_epoch = duration > 0.0
+
+        events.append(
+            EventItem(
+                dateOLE=date_ole,
+                dateFraction=date_fraction,
+                date=event_time,
+                duration=duration,
+                user=user,
+                GUID=guid_pretty,
+                label=label,
+                IDStr=label_text,
+                annotation=annotation,
+                segmentIndex=seg_index,
+                isEpoch=is_epoch,
             )
-            
-            # Move to next packet (offset + packet_length)
-            offset = offset + packet_length
-    
+        )
+        offset += packet_length
+
     return events
 
 
@@ -1105,7 +1105,12 @@ def _scan_utf16_label(buffer: bytes, start: int, max_scan: int = 2048, max_chars
 def _clean_event_label(text: str) -> str:
     if not text:
         return ""
-    cleaned = "".join(ch if ch.isascii() and ch.isprintable() else " " for ch in text)
+    cleaned = "".join(
+        ch
+        if ch.isprintable() and (ord(ch) <= 0x007E or 0x00A0 <= ord(ch) <= 0x024F)
+        else " "
+        for ch in text
+    )
     cleaned = " ".join(cleaned.split())
     if cleaned in {"yne pne", "yne åpne"}:
         return "Øyne åpnes"
@@ -1161,11 +1166,17 @@ def _read_event_type_info(
     index_entries = _main_index_by_section(main_index, packet.index)
     if not index_entries:
         return {}
-    index_entry = index_entries[0]
-    handle.seek(index_entry.offset, 0)
-    buffer = _read_exact(handle, index_entry.sectionL)
     if not target_guids:
         return {}
+    blob = bytearray()
+    for entry in index_entries:
+        if entry.sectionL <= 0:
+            continue
+        handle.seek(entry.offset, 0)
+        blob.extend(_read_exact(handle, entry.sectionL))
+    if not blob:
+        return {}
+    buffer = bytes(blob)
 
     mapping: dict[str, str] = {}
     for guid in target_guids:

@@ -2,7 +2,12 @@
 
 ## Unreleased
 
--
+- Improve robustness of event parsing when metadata is split across multiple sections.
+- Improve event type resolution from metadata, reducing unknown event labels.
+- Improve label text handling for non-ASCII Latin characters.
+- Improve annotation parity with proprietary exports.
+- Thanks to Sampsa for providing test files used in this iteration!!!
+
 ## 0.2.2 (2026-01-10)
 
 - Resampling: `--resample-to` uses `scipy.signal.resample_poly` (polyphase FIR) and requires scipy.
