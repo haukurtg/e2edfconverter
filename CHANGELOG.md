@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+-
+
+## 0.2.3 (2026-02-18)
+
 - Improve robustness of event parsing when metadata is split across multiple sections.
 - Improve event type resolution from metadata, reducing unknown event labels.
 - Improve label text handling for non-ASCII Latin characters.
