@@ -4,6 +4,13 @@
 
 -
 
+## 0.2.4 (2026-02-20)
+
+- Enforce integer-Hz EDF output sampling rates to prevent silent timing/sample drift.
+- Reject fractional `--resample-to` values at CLI parsing time.
+- Fail early with a clear error when source rate is fractional and no resampling is requested.
+- Add regression tests for fractional-rate rejection paths.
+
 ## 0.2.3 (2026-02-18)
 
 - Improve robustness of event parsing when metadata is split across multiple sections.

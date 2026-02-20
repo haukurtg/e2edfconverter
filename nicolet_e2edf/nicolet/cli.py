@@ -19,6 +19,33 @@ from .types import EventItem, SegmentInfo
 from .tui import TuiOptions, rich_available, run_rich_wizard, run_tui
 
 logger = logging.getLogger(__name__)
+_SFREQ_INT_TOL = 1e-6
+
+
+def _parse_integer_hz(raw: str) -> float:
+    """argparse type parser that accepts only positive integer Hz values."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid sampling rate: {raw}") from exc
+    if not np.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("Sampling rate must be a positive finite value")
+    rounded = int(round(value))
+    if rounded <= 0 or not np.isclose(value, float(rounded), rtol=0.0, atol=_SFREQ_INT_TOL):
+        raise argparse.ArgumentTypeError(
+            "Sampling rate for EDF output must be an integer Hz value (e.g. 128, 256, 512)"
+        )
+    return float(rounded)
+
+
+def _require_integer_output_rate(fs: float, *, context: str) -> None:
+    rounded = int(round(float(fs)))
+    if rounded > 0 and np.isclose(float(fs), float(rounded), rtol=0.0, atol=_SFREQ_INT_TOL):
+        return
+    raise RuntimeError(
+        f"{context} sampling rate is {fs} Hz, but EDF output currently requires integer Hz. "
+        "Use --resample-to <integer Hz>."
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,8 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resample-to",
-        type=float,
-        help="Optional sampling rate (Hz) to resample the output EDF to (requires scipy)",
+        type=_parse_integer_hz,
+        help="Optional integer sampling rate (Hz) for EDF output (requires scipy)",
     )
     parser.add_argument(
         "--lowcut",
@@ -909,6 +936,9 @@ def convert_file(
     fs = public_header.get("Fs") or nrv_header.targetSamplingRate
     if not fs:
         raise RuntimeError("Unable to determine sampling frequency from header")
+    fs = float(fs)
+    if resample_to is None:
+        _require_integer_output_rate(fs, context="Input")
 
     channels = _select_channels(nrv_header, include_all=resample_to is not None)
     if not channels:
@@ -937,6 +967,8 @@ def convert_file(
                 ch0 = channels[0] - 1
                 if ch0 < len(segment.samplingRate):
                     seg_fs = float(segment.samplingRate[ch0])
+            if resample_to is None:
+                _require_integer_output_rate(seg_fs, context=f"Segment {seg_idx + 1}")
             if resample_to is not None:
                 if status_cb:
                     status_cb(f"resample (segment {seg_idx + 1}/{len(segments)})")

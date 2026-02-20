@@ -13,6 +13,21 @@ from .types import EventItem
 _MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", 
                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
+_SFREQ_INT_TOL = 1e-6
+
+
+def _require_integer_sampling_rate(sfreq: float) -> int:
+    """Validate that EDF output sampling rate is an integer Hz value."""
+    if not np.isfinite(sfreq) or sfreq <= 0:
+        raise ValueError("Sampling frequency must be a positive finite number")
+    rounded = int(round(float(sfreq)))
+    if rounded <= 0 or not np.isclose(float(sfreq), float(rounded), rtol=0.0, atol=_SFREQ_INT_TOL):
+        raise ValueError(
+            f"EDF output requires an integer sampling rate in Hz, got {sfreq}. "
+            "Use resampling to an integer Hz rate before writing."
+        )
+    return rounded
+
 
 def _clean_ascii(text: str | None, fallback: str, length: int) -> str:
     """Clean text to ASCII-only, returning fallback if empty."""
@@ -291,8 +306,9 @@ def write_edf(
     n_samples, n_channels = data_uV.shape
     if n_channels != len(ch_names):
         raise ValueError("Channel-name list must match waveform column count")
-    if n_samples == 0 or sfreq <= 0:
+    if n_samples == 0:
         raise ValueError("Sampling frequency and data must be non-zero")
+    sfreq_i = _require_integer_sampling_rate(float(sfreq))
 
     # Guard against NaN/Inf from upstream scaling to keep EDF ranges finite.
     if not np.isfinite(data_uV).all():
@@ -312,10 +328,10 @@ def write_edf(
     # Use 1-second data records to stay well under EDF size limits
     # This ensures compatibility with strict readers like EDFbrowser
     record_duration = 1.0  # seconds per record
-    samples_per_channel_per_record = int(sfreq)  # samples per channel per record
+    samples_per_channel_per_record = sfreq_i  # samples per channel per record
     
     # Calculate total number of records (round up to include partial last record)
-    total_duration = n_samples / sfreq
+    total_duration = n_samples / float(sfreq_i)
     n_records = int(np.ceil(total_duration / record_duration))
     
     # Include annotations signal if annotations are provided
