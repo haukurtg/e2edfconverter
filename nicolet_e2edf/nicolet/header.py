@@ -98,6 +98,7 @@ STATIC_PACKET_ID_MAP = {
     "{024FA81F-6A83-43C8-8C82-241A5501F0A1}": "SPECTRUMGUID",
     "{8032E68A-EA3E-42E8-893E-6E93C59ED515}": "SIGNALINFOGUID",
     "{30950D98-C39C-4352-AF3E-CB17D5B93DED}": "SENSORINFOGUID",
+    "{0315370D-8D0D-4C32-AE2D-141476979301}": "INPUTMONTAGEGUID",
     "{F5D39CD3-A340-4172-A1A3-78B2CDBCCB9F}": "DERIVEDSIGNALINFOGUID",
     "{969FBB89-EE8E-4501-AD40-FB5A448BC4F9}": "ARTIFACTINFOGUID",
     "{02948284-17EC-4538-A7FA-8E18BD65E167}": "STUDYINFOGUID",
@@ -577,6 +578,16 @@ def _read_montage_info(
             }
         )
 
+    # Some files store additional AV derivation rows in later DERIVATIONGUID
+    # sections. Parse and merge them into MontageInfo so downstream code only
+    # needs one header-level montage source.
+    for extra_entry in index_entries[1:]:
+        handle.seek(extra_entry.offset, 0)
+        chunk = _read_exact(handle, int(extra_entry.sectionL))
+        montage.extend(_parse_supplemental_av_montage_rows(chunk))
+
+    montage.extend(_read_aux_av_montage_rows(handle, static_packets, main_index))
+
     # Attach display colors when available.
     display_packet = _lookup_static(static_packets, idstr="DISPLAYGUID")
     if display_packet:
@@ -596,6 +607,68 @@ def _read_montage_info(
                     montage[i]["displayName"] = display_name
                     montage[i]["color"] = color
     return montage
+
+
+def _parse_supplemental_av_montage_rows(chunk: bytes) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not chunk:
+        return rows
+
+    tokens = [text.strip() for text in chunk.decode("utf-16le", errors="ignore").split("\x00") if text and text.strip()]
+    i = 0
+    while i + 3 < len(tokens):
+        deriv_name, signal_name, ref_name, marker = tokens[i], tokens[i + 1], tokens[i + 2], tokens[i + 3]
+        if (
+            "-" in deriv_name
+            and signal_name.isdigit()
+            and ref_name.upper().startswith("AV")
+            and marker in {"\x01", "1"}
+        ):
+            rows.append(
+                {
+                    "montageName": ref_name,
+                    "derivationName": deriv_name,
+                    "signalName1": signal_name,
+                    "signalName2": ref_name,
+                }
+            )
+            i += 4
+            continue
+        i += 1
+    return rows
+
+
+def _read_aux_av_montage_rows(
+    handle: BinaryIO,
+    static_packets: list[StaticPacket],
+    main_index: list[MainIndexEntry],
+) -> list[dict[str, object]]:
+    aux_packet = _lookup_static(static_packets, idstr="INPUTMONTAGEGUID")
+    if aux_packet is None:
+        return []
+    index_entries = _main_index_by_section(main_index, aux_packet.index)
+    if not index_entries:
+        return []
+
+    dedup: set[tuple[str, str, str]] = set()
+    aux_rows: list[dict[str, object]] = []
+    for entry in index_entries:
+        if entry.sectionL <= 0:
+            continue
+        handle.seek(entry.offset, 0)
+        chunk = _read_exact(handle, int(entry.sectionL))
+        for row in _parse_supplemental_av_montage_rows(chunk):
+            key = (
+                str(row.get("signalName1", "")),
+                str(row.get("derivationName", "")),
+                str(row.get("montageName", "")),
+            )
+            if key in dedup:
+                continue
+            dedup.add(key)
+            row["source"] = "aux_av_table"
+            aux_rows.append(row)
+    return aux_rows
 
 
 def _read_dynamic_montages(dynamic_packets: list[dict[str, object]]) -> list[dict[str, object]]:

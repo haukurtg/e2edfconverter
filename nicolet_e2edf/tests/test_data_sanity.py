@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,7 @@ def _build_synthetic_header(path: Path, samples: np.ndarray) -> NervusHeader:
     ]
     segment = SegmentInfo(
         dateOLE=0.0,
-        date=datetime.utcnow(),
+        date=datetime.now(timezone.utc),
         duration=1.0,
         chName=["C1"],
         refName=["REF"],

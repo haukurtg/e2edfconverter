@@ -87,7 +87,7 @@ Options: `--lowcut`, `--highcut`, `--notch`, `--snapshot out.png` (for headless 
 - Events are written as EDF+ annotations
 - EVENTTYPEINFOGUID labels are reverse-engineered; unknown GUIDs may be exported as UNKNOWN.
 - `.eeg` support is **experimental and not prioritized**: some files may convert, but signal data and channel labels can be unreliable. Treat `.eeg` as work-in-progress.
-- Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). In those cases even vendor EDF exports keep numeric labels, so this is expected unless an external montage mapping is available. We still need a consistent way to map these when the source provides it.
+- Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). The converter now automatically attempts label recovery from source montage derivations (from `v0.2.5`).
 
 ## Contributing
 

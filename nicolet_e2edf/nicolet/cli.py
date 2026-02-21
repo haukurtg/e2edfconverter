@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import re
 from fractions import Fraction
 from datetime import datetime, timedelta
 from collections.abc import Iterable, Sequence
@@ -20,6 +21,21 @@ from .tui import TuiOptions, rich_available, run_rich_wizard, run_tui
 
 logger = logging.getLogger(__name__)
 _SFREQ_INT_TOL = 1e-6
+_EEG_POSITION_PREFIXES = {
+    "FP",
+    "AF",
+    "F",
+    "FC",
+    "FT",
+    "C",
+    "CP",
+    "TP",
+    "T",
+    "P",
+    "PO",
+    "O",
+    "I",
+}
 
 
 def _parse_integer_hz(raw: str) -> float:
@@ -215,6 +231,221 @@ def _candidate_output_path(input_path: Path, output_dir: Path, input_root: Path 
     return output_dir / f"{input_path.stem}.edf"
 
 
+def _clean_channel_label(label: object) -> str:
+    cleaned = str(label or "").split("\x00", 1)[0].strip()
+    return cleaned
+
+
+def _channel_match_key(label: object) -> str:
+    return _clean_channel_label(label).upper().replace(" ", "").replace("_", "")
+
+
+def _normalize_eeg_position(label: object) -> str | None:
+    token = _clean_channel_label(label).upper()
+    if not token:
+        return None
+
+    token = token.replace("EEG", "", 1) if token.startswith("EEG ") else token
+    token = token.replace(" ", "").replace("_", "")
+    if token.endswith("-REF"):
+        token = token[:-4]
+    elif token.endswith("REF") and len(token) > 3:
+        token = token[:-3]
+    token = token.strip("-")
+
+    if token in {"A1", "A2", "REF", "REFERENCE", "GROUND", "GND"}:
+        return None
+    if token == "IZ":
+        return token
+
+    if token.endswith("Z"):
+        prefix = token[:-1]
+        if prefix in _EEG_POSITION_PREFIXES:
+            return token
+        return None
+
+    match = re.fullmatch(r"([A-Z]{1,3})(\d{1,2})", token)
+    if not match:
+        return None
+    prefix, number_text = match.groups()
+    if prefix not in _EEG_POSITION_PREFIXES:
+        return None
+    number = int(number_text)
+    if 1 <= number <= 12:
+        return f"{prefix}{number}"
+    return None
+
+
+def _extract_eeg_label_from_derivation(derivation_name: object) -> str | None:
+    raw = _clean_channel_label(derivation_name)
+    if not raw:
+        return None
+    lhs = re.split(r"[-/\\+,:;]", raw, maxsplit=1)[0]
+
+    for part in (lhs, raw):
+        normalized = _normalize_eeg_position(part)
+        if normalized:
+            return normalized
+        for token in re.findall(r"[A-Za-z]{1,4}\s*\d{0,2}[A-Za-z]?", part):
+            normalized = _normalize_eeg_position(token)
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_derivation_endpoint(token: str) -> str | None:
+    cleaned = _clean_channel_label(token).upper().replace(" ", "").replace("_", "")
+    if not cleaned:
+        return None
+    # Legacy derivation strings sometimes use 01/02 for occipitals.
+    if cleaned == "01":
+        return "O1"
+    if cleaned == "02":
+        return "O2"
+    return _normalize_eeg_position(cleaned)
+
+
+def _extract_eeg_endpoints_from_derivation(derivation_name: object) -> tuple[str | None, str | None]:
+    raw = _clean_channel_label(derivation_name)
+    if not raw:
+        return None, None
+    if "-" not in raw:
+        return _extract_eeg_label_from_derivation(raw), None
+    left_raw, right_raw = raw.split("-", 1)
+    left = _normalize_derivation_endpoint(left_raw)
+    right = _normalize_derivation_endpoint(right_raw)
+    return left, right
+
+
+def _add_mapping_with_conflict_tracking(
+    mapping: dict[str, str],
+    conflicts: set[str],
+    signal_name: str,
+    electrode_name: str | None,
+) -> None:
+    if not signal_name or not electrode_name:
+        return
+    key = _channel_match_key(signal_name)
+    previous = mapping.get(key)
+    if previous and previous != electrode_name:
+        conflicts.add(key)
+        return
+    mapping[key] = electrode_name
+
+
+def _is_numeric_style_channel_label(label: str) -> bool:
+    cleaned = _clean_channel_label(label)
+    if not cleaned:
+        return False
+    return bool(re.fullmatch(r"[0-9]+", cleaned))
+
+
+def _should_attempt_numeric_montage_recovery(channel_labels: list[str]) -> bool:
+    if not channel_labels:
+        return False
+
+    eeg_count = sum(1 for label in channel_labels if _categorize_channel(label) == "EEG")
+    if eeg_count > 0:
+        # Respect explicit channel naming: only recover when current parsing found no EEG.
+        return False
+
+    non_aux = [
+        label
+        for label in channel_labels
+        if _categorize_channel(label) in {"Other", "EEG"}
+    ]
+    if not non_aux:
+        return False
+
+    # Gate recovery to numeric-style cohorts only (the targeted failure mode).
+    return all(_is_numeric_style_channel_label(label) for label in non_aux)
+
+
+def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> list[str]:
+    if not _should_attempt_numeric_montage_recovery(channel_labels):
+        return channel_labels
+
+    montage_entries = getattr(header, "MontageInfo", None) or []
+    if not montage_entries or not channel_labels:
+        return channel_labels
+
+    primary_entries = [
+        entry for entry in montage_entries if entry.get("source") != "aux_av_table"
+    ]
+    aux_entries = [
+        entry for entry in montage_entries if entry.get("source") == "aux_av_table"
+    ]
+
+    signal_to_electrode: dict[str, str] = {}
+    conflicts: set[str] = set()
+
+    def _collect_mappings(
+        entries: list[dict[str, object]],
+        mapping: dict[str, str],
+        mapping_conflicts: set[str],
+    ) -> None:
+        for entry in entries:
+            signal_name = _clean_channel_label(entry.get("signalName1", ""))
+            signal_name_2 = _clean_channel_label(entry.get("signalName2", ""))
+            derivation_name = entry.get("derivationName", "")
+            if not signal_name or not derivation_name:
+                continue
+            left, right = _extract_eeg_endpoints_from_derivation(derivation_name)
+            _add_mapping_with_conflict_tracking(mapping, mapping_conflicts, signal_name, left)
+            # Some numeric channels only appear as signalName2 (right endpoint).
+            if signal_name_2 and signal_name_2.isdigit():
+                _add_mapping_with_conflict_tracking(
+                    mapping, mapping_conflicts, signal_name_2, right
+                )
+
+    # Primary montage rows define the authoritative mapping.
+    _collect_mappings(primary_entries, signal_to_electrode, conflicts)
+    for key in conflicts:
+        signal_to_electrode.pop(key, None)
+
+    # Auxiliary rows (e.g. hidden input-montage tables) only fill gaps and
+    # never override primary mappings.
+    if aux_entries:
+        aux_mapping: dict[str, str] = {}
+        aux_conflicts: set[str] = set()
+        _collect_mappings(aux_entries, aux_mapping, aux_conflicts)
+        for key in aux_conflicts:
+            aux_mapping.pop(key, None)
+        for key, value in aux_mapping.items():
+            if key not in signal_to_electrode:
+                signal_to_electrode[key] = value
+
+    if not signal_to_electrode:
+        return channel_labels
+
+    recovered_labels: list[str] = []
+    replaced = 0
+    for label in channel_labels:
+        cleaned = _clean_channel_label(label)
+        normalized = _normalize_eeg_position(cleaned)
+        if normalized:
+            recovered_labels.append(normalized)
+            continue
+        mapped = signal_to_electrode.get(_channel_match_key(cleaned))
+        if mapped:
+            recovered_labels.append(mapped)
+            replaced += 1
+        else:
+            recovered_labels.append(cleaned)
+
+    eeg_before = sum(1 for label in channel_labels if _categorize_channel(label) == "EEG")
+    eeg_after = sum(1 for label in recovered_labels if _categorize_channel(label) == "EEG")
+    if eeg_after < eeg_before:
+        return channel_labels
+    if replaced > 0:
+        logger.info(
+            "Recovered %d/%d channel labels from montage derivations",
+            replaced,
+            len(channel_labels),
+        )
+    return recovered_labels
+
+
 def _channel_labels(header, channels: Iterable[int]) -> list[str]:
     labels = header.Segments[0].chName if header.Segments else []
     resolved: list[str] = []
@@ -224,7 +455,7 @@ def _channel_labels(header, channels: Iterable[int]) -> list[str]:
             label = labels[zero_based]
         except (IndexError, TypeError):
             label = f"Ch{channel}"
-        cleaned = label.split("\x00", 1)[0].strip()
+        cleaned = _clean_channel_label(label)
         resolved.append(cleaned or f"Ch{channel}")
     return resolved
 
@@ -674,7 +905,7 @@ def _notch_filter(
 
 def _categorize_channel(label: str) -> str:
     """Categorize a channel label into a type based on naming conventions."""
-    label_upper = label.upper().strip()
+    label_upper = _clean_channel_label(label).upper()
     
     # EOG (electrooculogram) channels
     if label_upper in ("ROC", "LOC", "EOG", "HEOG", "VEOG", "LEOG", "REOG"):
@@ -692,27 +923,25 @@ def _categorize_channel(label: str) -> str:
     if label_upper in ("A1", "A2", "REF", "REFERENCE", "GROUND", "GND"):
         return "Reference"
     
-    # Standard 10-20 EEG electrode positions
-    # Pattern: Letter(s) + optional number + optional letter (including midline Z)
-    eeg_patterns = ["FP", "F", "C", "P", "O", "T"]
-    if any(label_upper.startswith(prefix) for prefix in eeg_patterns):
-        # Check if it's a valid EEG position (has a number or is a midline Z)
-        if any(char.isdigit() for char in label_upper) or label_upper.endswith("Z"):
-            return "EEG"
+    if _normalize_eeg_position(label_upper):
+        return "EEG"
     
     # If we can't categorize it, it's "Other"
     return "Other"
 
 
-def _build_channels_list(channel_labels: list[str]) -> list[dict[str, object]]:
+def _build_channels_list(
+    channel_labels: list[str],
+) -> list[dict[str, object]]:
     """Build a flat list of channels with type info for easy DataFrame conversion."""
     channels = []
     for idx, label in enumerate(channel_labels):
-        channels.append({
+        item = {
             "index": idx,
             "name": label,
             "type": _categorize_channel(label),
-        })
+        }
+        channels.append(item)
     return channels
 
 
@@ -947,6 +1176,7 @@ def convert_file(
     if status_cb:
         status_cb("read data")
     channel_labels = _channel_labels(nrv_header, channels)
+    recovered_channel_labels = _recover_channel_labels_from_montage(nrv_header, channel_labels)
     mixed_across_channels, mixed_over_time = _sampling_rate_variation(nrv_header, channels)
     if resample_to is not None and mixed_over_time:
         logger.warning(
@@ -994,7 +1224,7 @@ def convert_file(
                 segment_output,
                 seg_waveform,
                 seg_fs,
-                channel_labels,
+                recovered_channel_labels,
                 patient_meta,
                 recording_start=segment_start,
                 annotations=segment_events,
@@ -1006,7 +1236,7 @@ def convert_file(
                     segment_output,
                     source_path=input_path,
                     sampling_rate=seg_fs,
-                    channel_labels=channel_labels,
+                    channel_labels=recovered_channel_labels,
                     sample_count=seg_waveform.shape[0],
                     start_time=segment_start,
                     events=segment_events,
@@ -1071,7 +1301,7 @@ def convert_file(
         resolved_output,
         waveform,
         fs,
-        channel_labels,
+        recovered_channel_labels,
         patient_meta,
         recording_start=nrv_header.startDateTime,
         annotations=adjusted_events,
@@ -1083,7 +1313,7 @@ def convert_file(
             resolved_output,
             source_path=input_path,
             sampling_rate=fs,
-            channel_labels=channel_labels,
+            channel_labels=recovered_channel_labels,
             sample_count=waveform.shape[0],
             start_time=nrv_header.startDateTime,
             events=adjusted_events,
@@ -1093,7 +1323,7 @@ def convert_file(
         "Converted %s → %s (%d channels @ %.2f Hz)",
         input_path.name,
         resolved_output.name,
-        len(channel_labels),
+        len(recovered_channel_labels),
         fs,
     )
     return resolved_output
