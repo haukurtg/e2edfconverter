@@ -578,13 +578,34 @@ def _read_montage_info(
             }
         )
 
-    # Some files store additional AV derivation rows in later DERIVATIONGUID
-    # sections. Parse and merge them into MontageInfo so downstream code only
-    # needs one header-level montage source.
-    for extra_entry in index_entries[1:]:
+    # Some files embed AV derivation rows as UTF-16 token streams inside one
+    # or more DERIVATIONGUID sections, including the first section.
+    # Parse all sections and merge without duplicates.
+    dedup_rows: set[tuple[str, str, str, str]] = {
+        (
+            str(row.get("montageName", "")),
+            str(row.get("derivationName", "")),
+            str(row.get("signalName1", "")),
+            str(row.get("signalName2", "")),
+        )
+        for row in montage
+    }
+    for extra_entry in index_entries:
+        if extra_entry.sectionL <= 0:
+            continue
         handle.seek(extra_entry.offset, 0)
         chunk = _read_exact(handle, int(extra_entry.sectionL))
-        montage.extend(_parse_supplemental_av_montage_rows(chunk))
+        for row in _parse_supplemental_av_montage_rows(chunk):
+            key = (
+                str(row.get("montageName", "")),
+                str(row.get("derivationName", "")),
+                str(row.get("signalName1", "")),
+                str(row.get("signalName2", "")),
+            )
+            if key in dedup_rows:
+                continue
+            dedup_rows.add(key)
+            montage.append(row)
 
     montage.extend(_read_aux_av_montage_rows(handle, static_packets, main_index))
 

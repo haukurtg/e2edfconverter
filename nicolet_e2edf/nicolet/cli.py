@@ -297,6 +297,10 @@ def _normalize_derivation_endpoint(token: str) -> str | None:
     cleaned = _clean_channel_label(token).upper().replace(" ", "").replace("_", "")
     if not cleaned:
         return None
+    # Derivation labels may include legacy aliases in parentheses, e.g. T7(T3).
+    cleaned = re.sub(r"\(.*?\)", "", cleaned).strip()
+    if not cleaned:
+        return None
     # Legacy derivation strings sometimes use 01/02 for occipitals.
     if cleaned == "01":
         return "O1"
@@ -344,11 +348,6 @@ def _should_attempt_numeric_montage_recovery(channel_labels: list[str]) -> bool:
     if not channel_labels:
         return False
 
-    eeg_count = sum(1 for label in channel_labels if _categorize_channel(label) == "EEG")
-    if eeg_count > 0:
-        # Respect explicit channel naming: only recover when current parsing found no EEG.
-        return False
-
     non_aux = [
         label
         for label in channel_labels
@@ -357,8 +356,28 @@ def _should_attempt_numeric_montage_recovery(channel_labels: list[str]) -> bool:
     if not non_aux:
         return False
 
-    # Gate recovery to numeric-style cohorts only (the targeted failure mode).
-    return all(_is_numeric_style_channel_label(label) for label in non_aux)
+    numeric_count = sum(1 for label in non_aux if _is_numeric_style_channel_label(label))
+    if numeric_count == 0:
+        return False
+
+    # If we already have explicit non-numeric non-EEG labels (e.g. VST 01,
+    # matte 01), this is not the numeric-ID failure mode.
+    non_numeric_other = [
+        label
+        for label in non_aux
+        if _categorize_channel(label) == "Other" and not _is_numeric_style_channel_label(label)
+    ]
+    if non_numeric_other:
+        return False
+
+    # Primary target: all labels are numeric-style.
+    if numeric_count == len(non_aux):
+        return True
+
+    # Also recover partial cases where labels are predominantly numeric and only
+    # a subset already resolved as EEG.
+    threshold = max(2, (len(non_aux) + 1) // 2)
+    return numeric_count >= threshold
 
 
 def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> list[str]:
