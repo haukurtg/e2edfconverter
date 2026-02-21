@@ -41,7 +41,7 @@ def test_parse_supplemental_av_montage_rows_extracts_expected_rows() -> None:
     ]
 
 
-def test_parse_supplemental_av_montage_rows_ignores_non_av_patterns() -> None:
+def test_parse_supplemental_av_montage_rows_parses_numeric_derivation_pairs() -> None:
     text = (
         "CZ-PZ\x00"
         "26\x00"
@@ -49,4 +49,73 @@ def test_parse_supplemental_av_montage_rows_ignores_non_av_patterns() -> None:
         "1\x00"
     )
     rows = _parse_supplemental_av_montage_rows(text.encode("utf-16le"))
-    assert rows == []
+    assert rows == [
+        {
+            "montageName": "",
+            "derivationName": "CZ-PZ",
+            "signalName1": "26",
+            "signalName2": "27",
+        }
+    ]
+
+
+def test_parse_supplemental_av_montage_rows_supports_shared_av_context() -> None:
+    text = (
+        "64 AV\x00"
+        "Fp1 - av\x00"
+        "1\x00"
+        "Fp2 - av\x00"
+        "2\x00"
+        "AF3 - av\x00"
+        "5\x00"
+        "AV64\x00"
+        "\x01\x00"
+        "F2 -av\x00"
+        "16\x00"
+        "FT9 - av\x00"
+        "17\x00"
+        "AV64\x00"
+        "\x01\x00"
+        "EKG\x00"
+        "68\x00"
+        "\x01\x00"
+    )
+    rows = _parse_supplemental_av_montage_rows(text.encode("utf-16le"))
+    assert rows == [
+        {
+            "montageName": "AV64",
+            "derivationName": "Fp1 - av",
+            "signalName1": "1",
+            "signalName2": "AV64",
+        },
+        {
+            "montageName": "AV64",
+            "derivationName": "Fp2 - av",
+            "signalName1": "2",
+            "signalName2": "AV64",
+        },
+        {
+            "montageName": "AV64",
+            "derivationName": "AF3 - av",
+            "signalName1": "5",
+            "signalName2": "AV64",
+        },
+        {
+            "montageName": "AV64",
+            "derivationName": "F2 -av",
+            "signalName1": "16",
+            "signalName2": "AV64",
+        },
+        {
+            "montageName": "AV64",
+            "derivationName": "FT9 - av",
+            "signalName1": "17",
+            "signalName2": "AV64",
+        },
+        {
+            "montageName": "AV64",
+            "derivationName": "EKG",
+            "signalName1": "68",
+            "signalName2": "",
+        },
+    ]

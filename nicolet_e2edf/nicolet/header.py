@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import struct
+import re
 from io import BytesIO
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
@@ -590,12 +591,16 @@ def _read_montage_info(
         )
         for row in montage
     }
+    supplemental_blob = b""
     for extra_entry in index_entries:
         if extra_entry.sectionL <= 0:
             continue
         handle.seek(extra_entry.offset, 0)
-        chunk = _read_exact(handle, int(extra_entry.sectionL))
-        for row in _parse_supplemental_av_montage_rows(chunk):
+        supplemental_blob += _read_exact(handle, int(extra_entry.sectionL))
+    for row in _parse_supplemental_av_montage_rows(supplemental_blob):
+            signal_name_2 = str(row.get("signalName2", "")).strip()
+            if signal_name_2.isdigit() or not signal_name_2.upper().startswith("AV"):
+                row["source"] = "supplemental_generic"
             key = (
                 str(row.get("montageName", "")),
                 str(row.get("derivationName", "")),
@@ -635,26 +640,128 @@ def _parse_supplemental_av_montage_rows(chunk: bytes) -> list[dict[str, object]]
     if not chunk:
         return rows
 
-    tokens = [text.strip() for text in chunk.decode("utf-16le", errors="ignore").split("\x00") if text and text.strip()]
+    tokens = [
+        text.strip()
+        for text in chunk.decode("utf-16le", errors="ignore").split("\x00")
+        if text and text.strip()
+    ]
+
+    def _as_av_ref(token: str) -> str | None:
+        upper = token.upper()
+        match = re.search(r"AV\s*(\d{1,3})", upper)
+        if match:
+            return f"AV{int(match.group(1))}"
+        match = re.search(r"(\d{1,3})\s*AV", upper)
+        if match:
+            return f"AV{int(match.group(1))}"
+        return None
+
+    def _is_av_derivation(token: str) -> bool:
+        return bool(re.search(r"-\s*AV$", " ".join(token.split()).upper()))
+
+    def _is_supplemental_derivation(token: str) -> bool:
+        cleaned = " ".join(token.split())
+        if not cleaned or cleaned[0].isdigit():
+            return False
+        if "-" in cleaned:
+            return True
+        return bool(re.fullmatch(r"[A-Za-z]{2,8}", cleaned))
+
+    dedup: set[tuple[str, str, str]] = set()
+    current_ref: str | None = None
     i = 0
-    while i + 3 < len(tokens):
-        deriv_name, signal_name, ref_name, marker = tokens[i], tokens[i + 1], tokens[i + 2], tokens[i + 3]
-        if (
-            "-" in deriv_name
-            and signal_name.isdigit()
-            and ref_name.upper().startswith("AV")
-            and marker in {"\x01", "1"}
-        ):
-            rows.append(
-                {
-                    "montageName": ref_name,
-                    "derivationName": deriv_name,
-                    "signalName1": signal_name,
-                    "signalName2": ref_name,
-                }
+    while i < len(tokens):
+        token_ref = _as_av_ref(tokens[i])
+        if token_ref:
+            current_ref = token_ref
+
+        if i + 2 < len(tokens):
+            deriv_name, signal_name = tokens[i], tokens[i + 1]
+            explicit_ref = _as_av_ref(tokens[i + 2])
+            if _is_av_derivation(deriv_name) and signal_name.isdigit() and explicit_ref:
+                key = (signal_name, deriv_name, explicit_ref)
+                if key not in dedup:
+                    dedup.add(key)
+                    rows.append(
+                        {
+                            "montageName": explicit_ref,
+                            "derivationName": deriv_name,
+                            "signalName1": signal_name,
+                            "signalName2": explicit_ref,
+                        }
+                    )
+                current_ref = explicit_ref
+                if i + 3 < len(tokens) and tokens[i + 3] in {"\x01", "1"}:
+                    i += 4
+                else:
+                    i += 3
+                continue
+
+        if i + 1 < len(tokens):
+            deriv_name, signal_name = tokens[i], tokens[i + 1]
+            if _is_av_derivation(deriv_name) and signal_name.isdigit() and current_ref:
+                key = (signal_name, deriv_name, current_ref)
+                if key not in dedup:
+                    dedup.add(key)
+                    rows.append(
+                        {
+                            "montageName": current_ref,
+                            "derivationName": deriv_name,
+                            "signalName1": signal_name,
+                            "signalName2": current_ref,
+                        }
+                    )
+                i += 2
+                continue
+
+        if i + 3 < len(tokens):
+            deriv_name, signal_name, signal_name_2, marker = (
+                tokens[i],
+                tokens[i + 1],
+                tokens[i + 2],
+                tokens[i + 3],
             )
-            i += 4
-            continue
+            if (
+                _is_supplemental_derivation(deriv_name)
+                and signal_name.isdigit()
+                and signal_name_2.isdigit()
+                and marker in {"\x01", "1"}
+            ):
+                key = (signal_name, deriv_name, signal_name_2)
+                if key not in dedup:
+                    dedup.add(key)
+                    rows.append(
+                        {
+                            "montageName": current_ref or "",
+                            "derivationName": deriv_name,
+                            "signalName1": signal_name,
+                            "signalName2": signal_name_2,
+                        }
+                    )
+                i += 4
+                continue
+
+        if i + 2 < len(tokens):
+            deriv_name, signal_name, marker = tokens[i], tokens[i + 1], tokens[i + 2]
+            if (
+                _is_supplemental_derivation(deriv_name)
+                and signal_name.isdigit()
+                and marker in {"\x01", "1"}
+            ):
+                key = (signal_name, deriv_name, "")
+                if key not in dedup:
+                    dedup.add(key)
+                    rows.append(
+                        {
+                            "montageName": current_ref or "",
+                            "derivationName": deriv_name,
+                            "signalName1": signal_name,
+                            "signalName2": "",
+                        }
+                    )
+                i += 3
+                continue
+
         i += 1
     return rows
 

@@ -321,6 +321,16 @@ def _extract_eeg_endpoints_from_derivation(derivation_name: object) -> tuple[str
     return left, right
 
 
+def _extract_non_eeg_single_derivation_label(derivation_name: object) -> str | None:
+    raw = _clean_channel_label(derivation_name)
+    if not raw or "-" in raw:
+        return None
+    candidate = raw.upper()
+    if _categorize_channel(candidate) in {"EKG", "EOG", "Reference", "Stimulus"}:
+        return candidate
+    return None
+
+
 def _add_mapping_with_conflict_tracking(
     mapping: dict[str, str],
     conflicts: set[str],
@@ -388,11 +398,12 @@ def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> l
     if not montage_entries or not channel_labels:
         return channel_labels
 
+    low_priority_sources = {"aux_av_table", "supplemental_generic"}
     primary_entries = [
-        entry for entry in montage_entries if entry.get("source") != "aux_av_table"
+        entry for entry in montage_entries if entry.get("source") not in low_priority_sources
     ]
     aux_entries = [
-        entry for entry in montage_entries if entry.get("source") == "aux_av_table"
+        entry for entry in montage_entries if entry.get("source") in low_priority_sources
     ]
 
     signal_to_electrode: dict[str, str] = {}
@@ -410,6 +421,8 @@ def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> l
             if not signal_name or not derivation_name:
                 continue
             left, right = _extract_eeg_endpoints_from_derivation(derivation_name)
+            if left is None:
+                left = _extract_non_eeg_single_derivation_label(derivation_name)
             _add_mapping_with_conflict_tracking(mapping, mapping_conflicts, signal_name, left)
             # Some numeric channels only appear as signalName2 (right endpoint).
             if signal_name_2 and signal_name_2.isdigit():
