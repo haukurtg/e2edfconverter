@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from nicolet_e2edf.nicolet.header import (
+    _parse_derivation_fixed_record_montage_rows,
+    _parse_unknown_montage_catalog_rows,
     _parse_supplemental_av_montage_rows,
     read_nervus_header,
 )
@@ -119,3 +121,143 @@ def test_parse_supplemental_av_montage_rows_supports_shared_av_context() -> None
             "signalName2": "",
         },
     ]
+
+
+def test_parse_derivation_fixed_record_montage_rows_extracts_rows() -> None:
+    stride = 520
+
+    def _make_chunk(rows: list[tuple[str, str]]) -> bytes:
+        chunk = bytearray(stride * (len(rows) + 1) + 64)
+
+        def _put_utf16(rec_idx: int, offset: int, text: str) -> None:
+            raw = text.encode("utf-16le")
+            start = rec_idx * stride + offset
+            chunk[start : start + len(raw)] = raw
+
+        _put_utf16(0, 40, "MONTAGE128")
+        for rec_idx, (name, signal_id) in enumerate(rows, start=1):
+            _put_utf16(rec_idx, 232, name)
+            _put_utf16(rec_idx, 360, signal_id)
+        return bytes(chunk)
+
+    # Too few rows should be ignored by the heuristic guard.
+    small = _make_chunk([("F3", "69"), ("C3", "70"), ("CZ", "82")])
+    assert _parse_derivation_fixed_record_montage_rows(small) == []
+
+    rows = _parse_derivation_fixed_record_montage_rows(
+        _make_chunk(
+            [
+                ("VTP1", "1"),
+                ("VTP2", "2"),
+                ("HST1", "23"),
+                ("HST2", "24"),
+                ("F3", "69"),
+                ("C3", "70"),
+                ("CZ", "82"),
+                ("PZ", "83"),
+            ]
+        )
+    )
+    assert len(rows) == 8
+    assert rows[0] == {
+        "montageName": "MONTAGE128",
+        "derivationName": "VTP1",
+        "signalName1": "1",
+        "signalName2": "",
+        "source": "derivation_fixed_table",
+    }
+    assert rows[-1]["derivationName"] == "PZ"
+    assert rows[-1]["signalName1"] == "83"
+
+
+def test_parse_unknown_montage_catalog_rows_extracts_kanaler_table() -> None:
+    entries = [
+        ("FP1", "1"),
+        ("FP2", "2"),
+        ("AF7", "3"),
+        ("AF8", "4"),
+        ("F7", "5"),
+        ("F8", "6"),
+        ("F3", "7"),
+        ("F4", "8"),
+        ("T7", "9"),
+        ("T8", "10"),
+        ("C3", "11"),
+        ("C4", "12"),
+        ("P7", "13"),
+        ("P8", "14"),
+        ("O1", "15"),
+        ("O2", "16"),
+        ("CZ", "17"),
+        ("PZ", "18"),
+    ]
+    text = "noise\x00misc\x00" + "32 kanaler\x00" + "".join(f"{name}\x00{idx}\x00" for name, idx in entries)
+    rows = _parse_unknown_montage_catalog_rows(text.encode("utf-16le"))
+    assert len(rows) == len(entries)
+    assert rows[0] == {
+        "montageName": "32 kanaler",
+        "derivationName": "FP1",
+        "signalName1": "1",
+        "signalName2": "",
+        "source": "unknown_montage_catalog",
+    }
+    assert rows[-1]["derivationName"] == "PZ"
+    assert rows[-1]["signalName1"] == "18"
+
+
+def test_parse_unknown_montage_catalog_rows_extracts_named_catalog() -> None:
+    entries = [
+        ("VTP1", "1"),
+        ("VTP2", "2"),
+        ("VTP3", "3"),
+        ("VTP4", "4"),
+        ("VTP5", "5"),
+        ("VTP6", "6"),
+        ("VST1", "7"),
+        ("VST2", "8"),
+        ("VST3", "9"),
+        ("VST4", "10"),
+        ("VST5", "11"),
+        ("VST6", "12"),
+        ("HTP1", "13"),
+        ("HTP2", "14"),
+        ("HST1", "15"),
+        ("HST2", "16"),
+        ("F3", "17"),
+        ("C3", "18"),
+        ("CZ", "19"),
+        ("PZ", "20"),
+        ("F4", "21"),
+        ("C4", "22"),
+        ("P4", "23"),
+        ("EKG", "24"),
+    ]
+    text = "junk\x00\x00PRECATALOG\x00Q\x00Q\x00" + "".join(f"{name}\x00{idx}\x00" for name, idx in entries)
+    rows = _parse_unknown_montage_catalog_rows(text.encode("utf-16le"))
+    assert len(rows) == len(entries)
+    assert rows[0]["montageName"] == "PRECATALOG"
+    assert rows[0]["source"] == "unknown_montage_catalog"
+    assert rows[0]["derivationName"] == "VTP1"
+    assert rows[0]["signalName1"] == "1"
+
+
+def test_parse_unknown_montage_catalog_rows_does_not_union_repeated_named_title_chunks() -> None:
+    first_chunk = "".join(f"F{i}\x00{i}\x00" for i in range(1, 28))
+    second_chunk = "".join(f"P{i}\x00{i+27}\x00" for i in range(1, 38))
+    text = (
+        "noise\x00"
+        "Copy of As Recorded\x00"
+        "\x1b\x00\x1b\x00"
+        + first_chunk
+        + ("junk\x00" * 40)
+        + "Copy of As Recorded\x00"
+        "\x1b\x00\x1b\x00"
+        + second_chunk
+    )
+    rows = _parse_unknown_montage_catalog_rows(text.encode("utf-16le"))
+    rows = [r for r in rows if r["montageName"] == "COPY OF AS RECORDED"]
+    # Prefer the first chunk (starts at 1) instead of union-merging the later
+    # repeated title occurrence that starts at a higher signal ID.
+    assert len(rows) == 27
+    assert rows[0]["derivationName"] == "F1"
+    assert rows[-1]["signalName1"] == "27"

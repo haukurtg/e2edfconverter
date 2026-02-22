@@ -11,6 +11,16 @@ from nicolet_e2edf.nicolet import cli
 from nicolet_e2edf.nicolet.types import EventItem, NervusHeader, SegmentInfo
 
 
+def test_categorize_channel_treats_pg1_pg2_as_eeg() -> None:
+    assert cli._categorize_channel("Pg1") == "EEG"
+    assert cli._categorize_channel("PG2") == "EEG"
+
+
+def test_should_attempt_numeric_montage_recovery_with_one_named_other_tail() -> None:
+    labels = [str(i) for i in range(1, 65)] + ["NpsykPC"]
+    assert cli._should_attempt_numeric_montage_recovery(labels) is True
+
+
 def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_header = NervusHeader(filename=tmp_path / "case.e")
     fake_header.matchingChannels = [1]
@@ -535,6 +545,322 @@ def test_montage_mapping_aux_rows_fill_missing_without_overriding_primary(
     sidecar = json.loads((output_dir / "case.json").read_text())
     names = [ch["name"] for ch in sidecar["channels"]]
     assert names == ["O1", "POZ", "EKG"]
+
+
+def test_montage_mapping_recovers_from_derivation_fixed_table_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2, 3]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "69", "82"],
+            refName=["REF", "REF", "REF"],
+            samplingRate=np.array([128.0, 128.0, 128.0]),
+            scale=np.ones(3),
+            sampleCount=np.array([4, 4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "VTP1", "signalName1": "1", "signalName2": "", "source": "derivation_fixed_table"},
+        {"derivationName": "F3", "signalName1": "69", "signalName2": "", "source": "derivation_fixed_table"},
+        {"derivationName": "CZ", "signalName1": "82", "signalName2": "", "source": "derivation_fixed_table"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["VTP1", "F3", "CZ"]
+
+
+def test_montage_mapping_recovers_from_derivation_main_table_direct_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2, 3]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "2", "69"],
+            refName=["REF", "REF", "REF"],
+            samplingRate=np.array([128.0, 128.0, 128.0]),
+            scale=np.ones(3),
+            sampleCount=np.array([4, 4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "VTP1", "signalName1": "1", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "VTP2", "signalName1": "2", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "F3", "signalName1": "69", "signalName2": "", "source": "derivation_main_table"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["VTP1", "VTP2", "F3"]
+
+
+def test_montage_mapping_unknown_catalog_fills_numeric_ref_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2, 3]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "2", "65"],
+            refName=["REF", "REF", "REF"],
+            samplingRate=np.array([128.0, 128.0, 128.0]),
+            scale=np.ones(3),
+            sampleCount=np.array([4, 4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "1-Ref", "signalName1": "1", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "2-Ref", "signalName1": "2", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "FPM1", "signalName1": "65", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "FP1", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"derivationName": "FP2", "signalName1": "2", "signalName2": "", "source": "unknown_montage_catalog"},
+        # Aux catalog must not override an explicit primary name for 65.
+        {"derivationName": "FC5", "signalName1": "65", "signalName2": "", "source": "unknown_montage_catalog"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["FP1", "FP2", "FPM1"]
+
+
+def test_montage_mapping_prefers_best_unknown_catalog_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2, 3]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "2", "3"],
+            refName=["REF", "REF", "REF"],
+            samplingRate=np.array([128.0, 128.0, 128.0]),
+            scale=np.ones(3),
+            sampleCount=np.array([4, 4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "1-Ref", "signalName1": "1", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "2-Ref", "signalName1": "2", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "3-Ref", "signalName1": "3", "signalName2": "", "source": "derivation_main_table"},
+        # A weak hidden catalog (numeric/ref-like names) should not win.
+        {"montageName": "AVERAGE", "derivationName": "1", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "AVERAGE", "derivationName": "2", "signalName1": "2", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "AVERAGE", "derivationName": "AV", "signalName1": "3", "signalName2": "", "source": "unknown_montage_catalog"},
+        # A richer hidden catalog with direct contact names should win.
+        {"montageName": "LOCALCUSTOM", "derivationName": "VTP1", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "LOCALCUSTOM", "derivationName": "VTP2", "signalName1": "2", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "LOCALCUSTOM", "derivationName": "F3", "signalName1": "3", "signalName2": "", "source": "unknown_montage_catalog"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["VTP1", "VTP2", "F3"]
+
+
+def test_montage_mapping_interleaved_aux_rows_keep_catalog_conflicts_local(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2, 3]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "2", "3"],
+            refName=["REF", "REF", "REF"],
+            samplingRate=np.array([128.0, 128.0, 128.0]),
+            scale=np.ones(3),
+            sampleCount=np.array([4, 4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "1-Ref", "signalName1": "1", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "2-Ref", "signalName1": "2", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "3-Ref", "signalName1": "3", "signalName2": "", "source": "derivation_main_table"},
+        # Catalog A and B are intentionally interleaved to mimic real-world
+        # score-sorted auxiliary ordering.
+        {"montageName": "CATA", "derivationName": "F3", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "CATB", "derivationName": "P3", "signalName1": "2", "signalName2": "", "source": "unknown_montage_catalog"},
+        # Conflict for signal 1 inside CATA: this should invalidate CATA's map
+        # for that signal instead of silently choosing first-seen value.
+        {"montageName": "CATA", "derivationName": "CZ", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "CATB", "derivationName": "P4", "signalName1": "3", "signalName2": "", "source": "unknown_montage_catalog"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["1", "P3", "P4"]
+
+
+def test_montage_mapping_ignores_bipolar_unknown_catalog_direct_labels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1, 2]
+    fake_header.targetSamplingRate = 128.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["1", "2"],
+            refName=["REF", "REF"],
+            samplingRate=np.array([128.0, 128.0]),
+            scale=np.ones(2),
+            sampleCount=np.array([4, 4]),
+        )
+    ]
+    fake_header.MontageInfo = [
+        {"derivationName": "1-Ref", "signalName1": "1", "signalName2": "", "source": "derivation_main_table"},
+        {"derivationName": "2-Ref", "signalName1": "2", "signalName2": "", "source": "derivation_main_table"},
+        # Derived labels should not be used as direct channel names.
+        {"montageName": "LOCAL", "derivationName": "Fp2-av", "signalName1": "1", "signalName2": "", "source": "unknown_montage_catalog"},
+        {"montageName": "LOCAL", "derivationName": "F3", "signalName1": "2", "signalName2": "", "source": "unknown_montage_catalog"},
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = []
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 128.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.array(
+            [[10, 20, 30, 40], [11, 21, 31, 41]],
+            dtype=np.float32,
+        )
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar = json.loads((output_dir / "case.json").read_text())
+    assert [ch["name"] for ch in sidecar["channels"]] == ["1", "F3"]
 
 
 def test_directory_input_preserves_subfolders_and_avoids_collisions(

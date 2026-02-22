@@ -96,6 +96,10 @@ class NervusHeader:
     PatientInfo: dict[str, Any] | None = None
     SigInfo: list[dict[str, Any]] = field(default_factory=list)
     ChannelInfo: list[dict[str, Any]] = field(default_factory=list)
+    # Parsed from INPUTGUID / INPUTSETTINGSGUID when available. These are kept
+    # as generic decoded tables because field semantics vary across recordings.
+    InputInfo: list[dict[str, Any]] = field(default_factory=list)
+    InputSettingsInfo: list[dict[str, Any]] = field(default_factory=list)
     TSInfo: list[TSEntry] = field(default_factory=list)
     TSInfoBySegment: list[list[TSEntry]] = field(default_factory=list)
     Segments: list[SegmentInfo] = field(default_factory=list)

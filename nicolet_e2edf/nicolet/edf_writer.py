@@ -29,13 +29,6 @@ def _require_integer_sampling_rate(sfreq: float) -> int:
     return rounded
 
 
-def _clean_ascii(text: str | None, fallback: str, length: int) -> str:
-    """Clean text to ASCII-only, returning fallback if empty."""
-    raw = (text or fallback).encode("ascii", "ignore")[:length]
-    cleaned = raw.decode("ascii", errors="ignore").strip()
-    return cleaned or fallback[:length]
-
-
 def _sanitize_subfield(text: str) -> str:
     """Sanitize a subfield for EDF+ structured fields.
     
