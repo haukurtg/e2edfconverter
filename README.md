@@ -105,7 +105,6 @@ Filtering during conversion (`--lowcut`, `--highcut`, `--notch`) is lossy. In mo
 - `.eeg` support is currently not reliable; we need a larger `.eeg` dataset to implement and validate it properly.
 - Some `.e` recordings store only numeric channel IDs (e.g., `1..64`). The numeric-channel fix and montage-recovery strategy (from `v0.2.5`) are mainly aimed at recovering channel names in atypical multi-channel EEG setups (`32`, `64`, `128`, etc.) using source montage derivations, fixed DERIVATION tables, and hidden montage catalogs.
 - The CLI supports folder input, but processes files serially. For large cohorts, it is usually more efficient to call the CLI from a small batch wrapper that runs multiple workers and tracks progress/errors.
-- For very large batch conversions, prefer a wrapper that also logs failures, writes a manifest/results CSV, and supports resume/retry.
 
 ## Contributing
 
