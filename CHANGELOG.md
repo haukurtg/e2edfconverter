@@ -6,10 +6,10 @@
 
 ## 0.2.5 (2026-02-22)
 
-- Improve channel-label recovery for numeric-ID recordings by adding hidden montage catalog and fixed-table heuristics.
+- Added new channel-label recovery for numeric-ID recordings by adding hidden montage catalog and fixed-table heuristics.
 - Fix auxiliary montage conflict handling when catalog rows are interleaved during scoring-based ordering.
 - Prevent derived/bipolar labels (e.g. `Fp2-av`) from being used as direct channel names during hidden-catalog recovery.
-- Parse `InputInfo` / `InputSettingsInfo` from source headers for internal diagnostics while keeping JSON sidecar schema unchanged.
+- Parse `InputInfo` / `InputSettingsInfo` from source headers for internal diagnostics. Perhaps this is useful later ...
 - Remove dead code and stale no-op variables in conversion and legacy parsing paths.
 - Add regression tests for interleaved auxiliary catalog conflicts and bipolar-label rejection in unknown catalogs.
 
