@@ -1796,10 +1796,11 @@ def _read_event_type_info(
 def _infer_reference(segments: list[SegmentInfo]) -> str | None:
     if not segments:
         return None
-    ref_labels = [ref for ref in segments[0].refName if ref]
+    ref_labels = [str(ref).split("\x00", 1)[0].strip() for ref in segments[0].refName if ref]
     if not ref_labels:
         return None
-    if sorted(set(ref_labels)) == ["REF"]:
+    normalized = sorted({label.upper() for label in ref_labels if label})
+    if normalized == ["REF"]:
         return "common"
     return "unknown"
 

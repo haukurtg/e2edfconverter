@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nicolet_e2edf.nicolet.header import (
+    _infer_reference,
     _parse_derivation_fixed_record_montage_rows,
     _parse_unknown_montage_catalog_rows,
     _parse_supplemental_av_montage_rows,
@@ -261,3 +263,8 @@ def test_parse_unknown_montage_catalog_rows_does_not_union_repeated_named_title_
     assert len(rows) == 27
     assert rows[0]["derivationName"] == "F1"
     assert rows[-1]["signalName1"] == "27"
+
+
+def test_infer_reference_treats_ref_case_variants_as_common() -> None:
+    segments = [SimpleNamespace(refName=["Ref", "REF", "ref", ""])]
+    assert _infer_reference(segments) == "common"
