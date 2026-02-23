@@ -4,6 +4,10 @@
 
 -
 
+## 0.2.6 (2026-02-23)
+
+- Faster conversion: improved channel-window reads and montage/header parsing.
+
 ## 0.2.5 (2026-02-22)
 
 - Added new channel-label recovery for numeric-ID recordings by adding hidden montage catalog and fixed-table heuristics.

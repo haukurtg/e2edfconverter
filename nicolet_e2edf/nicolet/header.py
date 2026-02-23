@@ -697,12 +697,13 @@ def _read_montage_info(
         )
         for row in montage
     }
-    supplemental_blob = b""
+    supplemental_chunks: list[bytes] = []
     for extra_entry in index_entries:
         if extra_entry.sectionL <= 0:
             continue
         handle.seek(extra_entry.offset, 0)
-        supplemental_blob += _read_exact(handle, int(extra_entry.sectionL))
+        supplemental_chunks.append(_read_exact(handle, int(extra_entry.sectionL)))
+    supplemental_blob = b"".join(supplemental_chunks)
     for row in _parse_supplemental_av_montage_rows(supplemental_blob):
             signal_name_2 = str(row.get("signalName2", "")).strip()
             if signal_name_2.isdigit() or not signal_name_2.upper().startswith("AV"):
@@ -1127,21 +1128,25 @@ def _read_unknown_montage_catalog_rows(
 
     dedup: set[tuple[str, str, str, str]] = set()
     rows: list[dict[str, object]] = []
+    main_index_by_section: dict[int, list[MainIndexEntry]] = {}
+    for entry in main_index:
+        main_index_by_section.setdefault(entry.sectionIdx, []).append(entry)
     for packet in static_packets:
         if packet.IDStr != "UNKNOWN":
             continue
-        index_entries = _main_index_by_section(main_index, packet.index)
+        index_entries = main_index_by_section.get(packet.index, [])
         if not index_entries:
             continue
         total_len = sum(int(entry.sectionL) for entry in index_entries if entry.sectionL and entry.sectionL > 0)
         if total_len < 1024 or total_len > 16 * 1024 * 1024:
             continue
-        blob = b""
+        blob_chunks: list[bytes] = []
         for entry in index_entries:
             if entry.sectionL <= 0:
                 continue
             handle.seek(entry.offset, 0)
-            blob += _read_exact(handle, int(entry.sectionL))
+            blob_chunks.append(_read_exact(handle, int(entry.sectionL)))
+        blob = b"".join(blob_chunks)
         for row in _parse_unknown_montage_catalog_rows(blob):
             key = (
                 str(row.get("montageName", "")),
