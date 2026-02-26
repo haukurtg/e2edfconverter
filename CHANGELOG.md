@@ -4,6 +4,11 @@
 
 -
 
+## 0.2.7 (2026-02-26)
+
+- SSE 64-channel numeric-ID recovery and README updates.
+- Fix case-sensitive REF reference inference.
+
 ## 0.2.6 (2026-02-23)
 
 - Faster conversion: improved channel-window reads and montage/header parsing.

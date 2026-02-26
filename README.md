@@ -8,7 +8,7 @@ A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format
 
 > **Note**: Some of our reverse‑engineered event labels are (unfortunately) in Norwegian.
 >
-> **Scope note**: This converter is primarily an in-house tool and includes some site-specific recovery heuristics (for example, fixed numeric-ID channel mappings used in local SSE recordings). These defaults improve our internal datasets, but may not match naming conventions used at other institutions.
+> **Scope note**: This converter is primarily an in-house tool and includes some site-specific recovery heuristics (for example, fixed numeric-ID channel mappings used in our local recordings). These defaults improve our internal datasets, but may not match naming conventions used at other institutions.
 
 ## Quick Start
 
