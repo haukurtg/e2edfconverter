@@ -42,6 +42,75 @@ _EEG_POSITION_PREFIXES = {
     "I",
 }
 _NUMERIC_REF_LABEL_RE = re.compile(r"^\d+\s*-\s*REF$", re.IGNORECASE)
+_SSE_64_NUMERIC_ID_EEG_LABELS = [
+    "FP1",
+    "FP2",
+    "AF7",
+    "AF8",
+    "AF3",
+    "AF4",
+    "F9",
+    "F10",
+    "F7",
+    "F8",
+    "F5",
+    "F6",
+    "F3",
+    "F4",
+    "F1",
+    "F2",
+    "FT9",
+    "FT10",
+    "FT7",
+    "FT8",
+    "FC3",
+    "FC4",
+    "T9",
+    "T10",
+    "T7",
+    "T8",
+    "C5",
+    "C6",
+    "C3",
+    "C4",
+    "C1",
+    "C2",
+    "TP9",
+    "TP10",
+    "TP7",
+    "TP8",
+    "CP3",
+    "CP4",
+    "P9",
+    "P10",
+    "P7",
+    "P8",
+    "P5",
+    "P6",
+    "P3",
+    "P4",
+    "P1",
+    "P2",
+    "PO7",
+    "PO8",
+    "PO3",
+    "PO4",
+    "O1",
+    "O2",
+    "FPZ",
+    "AFZ",
+    "FZ",
+    "FCZ",
+    "CZ",
+    "CPZ",
+    "PZ",
+    "POZ",
+    "OZ",
+]
+_SSE_64_NUMERIC_ID_MAP = {
+    str(index): label for index, label in enumerate(_SSE_64_NUMERIC_ID_EEG_LABELS, start=1)
+}
+_SSE_64_NUMERIC_ID_MAP["64"] = "EKG"
 
 
 def _parse_integer_hz(raw: str) -> float:
@@ -357,7 +426,57 @@ def _is_numeric_style_channel_label(label: str) -> bool:
     cleaned = _clean_channel_label(label)
     if not cleaned:
         return False
-    return bool(re.fullmatch(r"[0-9]+", cleaned))
+    return bool(re.fullmatch(r"[0-9]+", cleaned) or _NUMERIC_REF_LABEL_RE.fullmatch(cleaned))
+
+
+def _is_sse_source_recording(header: object) -> bool:
+    filename = getattr(header, "filename", None)
+    if not filename:
+        return False
+    path_text = str(filename).replace("\\", "/").upper()
+    return "/SSE/" in path_text or "SSE-ARKIV" in path_text
+
+
+def _extract_numeric_placeholder_id(label: object) -> str | None:
+    cleaned = _clean_channel_label(label)
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return str(int(cleaned))
+    match = _NUMERIC_REF_LABEL_RE.fullmatch(cleaned.upper())
+    if not match:
+        return None
+    return str(int(cleaned.split("-", 1)[0].strip()))
+
+
+def _recover_sse_64_numeric_id_labels(header: object, channel_labels: list[str]) -> list[str] | None:
+    """Apply a fixed SSE 64-contact numeric-ID map (63 EEG + channel ID 64 = EKG).
+
+    This is intentionally strict and only triggers for in-house SSE recordings
+    whose channel labels are an exact permutation of placeholder IDs 1..64
+    (optionally in ``N-Ref`` form).
+    """
+    if len(channel_labels) != 64:
+        return None
+    if not _is_sse_source_recording(header):
+        return None
+
+    ids: list[str] = []
+    for label in channel_labels:
+        numeric_id = _extract_numeric_placeholder_id(label)
+        if numeric_id is None:
+            return None
+        if numeric_id not in _SSE_64_NUMERIC_ID_MAP:
+            return None
+        ids.append(numeric_id)
+
+    expected_ids = {str(i) for i in range(1, 65)}
+    if set(ids) != expected_ids or len(set(ids)) != 64:
+        return None
+
+    recovered = [_SSE_64_NUMERIC_ID_MAP[numeric_id] for numeric_id in ids]
+    logger.info("Applied SSE fixed 64-channel numeric-ID mapping (63 EEG + EKG)")
+    return recovered
 
 
 def _should_attempt_numeric_montage_recovery(channel_labels: list[str]) -> bool:
@@ -406,11 +525,17 @@ def _should_attempt_numeric_montage_recovery(channel_labels: list[str]) -> bool:
 
 def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> list[str]:
     """Recover numeric placeholder labels using available montage metadata."""
+    if not channel_labels:
+        return channel_labels
     if not _should_attempt_numeric_montage_recovery(channel_labels):
         return channel_labels
 
+    sse_fixed_map_recovery = _recover_sse_64_numeric_id_labels(header, channel_labels)
+    if sse_fixed_map_recovery is not None:
+        return sse_fixed_map_recovery
+
     montage_entries = getattr(header, "MontageInfo", None) or []
-    if not montage_entries or not channel_labels:
+    if not montage_entries:
         return channel_labels
 
     recovery_plan = build_montage_recovery_plan(montage_entries, channel_labels)

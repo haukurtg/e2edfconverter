@@ -21,6 +21,33 @@ def test_should_attempt_numeric_montage_recovery_with_one_named_other_tail() -> 
     assert cli._should_attempt_numeric_montage_recovery(labels) is True
 
 
+def test_should_attempt_numeric_montage_recovery_with_numeric_ref_placeholders() -> None:
+    labels = [f"{i}-Ref" for i in range(1, 65)]
+    assert cli._should_attempt_numeric_montage_recovery(labels) is True
+
+
+def test_sse_fixed_64_numeric_id_mapping_recovers_line_layout() -> None:
+    fake_header = NervusHeader(filename=Path("/tmp/SSE/Arkiv/Patient.e"))
+    labels = [str(i) for i in range(1, 65)]
+
+    recovered = cli._recover_channel_labels_from_montage(fake_header, labels)
+
+    assert len(recovered) == 64
+    assert recovered[-1] == "EKG"
+    assert recovered[:6] == ["FP1", "FP2", "AF7", "AF8", "AF3", "AF4"]
+    assert recovered[32:36] == ["TP9", "TP10", "TP7", "TP8"]
+    assert recovered[-8:] == ["FZ", "FCZ", "CZ", "CPZ", "PZ", "POZ", "OZ", "EKG"]
+
+
+def test_sse_fixed_64_numeric_id_mapping_is_path_gated() -> None:
+    fake_header = NervusHeader(filename=Path("/tmp/other_site/Patient.e"))
+    labels = [str(i) for i in range(1, 65)]
+
+    recovered = cli._recover_channel_labels_from_montage(fake_header, labels)
+
+    assert recovered == labels
+
+
 def test_convert_to_edf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_header = NervusHeader(filename=tmp_path / "case.e")
     fake_header.matchingChannels = [1]

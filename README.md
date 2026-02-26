@@ -7,6 +7,8 @@ A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format
 > **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Since then, we've added substantial GUID/event and channel ID parsing logic through our own reverse‑engineering work. Thank you to the FieldTrip team!
 
 > **Note**: Some of our reverse‑engineered event labels are (unfortunately) in Norwegian.
+>
+> **Scope note**: This converter is primarily an in-house tool and includes some site-specific recovery heuristics (for example, fixed numeric-ID channel mappings used in local SSE recordings). These defaults improve our internal datasets, but may not match naming conventions used at other institutions.
 
 ## Quick Start
 
