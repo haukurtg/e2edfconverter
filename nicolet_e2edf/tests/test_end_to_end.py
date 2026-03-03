@@ -14,6 +14,28 @@ from nicolet_e2edf.nicolet.types import EventItem, NervusHeader, SegmentInfo
 def test_categorize_channel_treats_pg1_pg2_as_eeg() -> None:
     assert cli._categorize_channel("Pg1") == "EEG"
     assert cli._categorize_channel("PG2") == "EEG"
+    assert cli._categorize_channel("Fp1-AV") == "EEG"
+    assert cli._categorize_channel("Photic_2") == "Stimulus"
+
+
+def test_channel_labels_disambiguates_duplicate_names_with_reference() -> None:
+    fake_header = NervusHeader(filename=Path("/tmp/legacy.eeg"))
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=4 / 128.0,
+            chName=["Fp1", "Fp1", "Photic", "Photic"],
+            refName=["Ref", "AV", "Ref", "Ref"],
+            samplingRate=np.array([128.0, 128.0, 128.0, 128.0]),
+            scale=np.ones(4),
+            sampleCount=np.array([4, 4, 4, 4]),
+        )
+    ]
+
+    labels = cli._channel_labels(fake_header, [1, 2, 3, 4])
+
+    assert labels == ["Fp1-Ref", "Fp1-AV", "Photic", "Photic_2"]
 
 
 def test_should_attempt_numeric_montage_recovery_with_one_named_other_tail() -> None:

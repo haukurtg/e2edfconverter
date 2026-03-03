@@ -692,9 +692,10 @@ def _recover_channel_labels_from_montage(header, channel_labels: list[str]) -> l
 
 
 def _channel_labels(header, channels: Iterable[int]) -> list[str]:
+    channel_list = list(channels)
     labels = header.Segments[0].chName if header.Segments else []
     resolved: list[str] = []
-    for channel in channels:
+    for channel in channel_list:
         zero_based = channel - 1
         try:
             label = labels[zero_based]
@@ -702,7 +703,74 @@ def _channel_labels(header, channels: Iterable[int]) -> list[str]:
             label = f"Ch{channel}"
         cleaned = _clean_channel_label(label)
         resolved.append(cleaned or f"Ch{channel}")
-    return resolved
+    return _disambiguate_duplicate_channel_labels(header, channel_list, resolved)
+
+
+def _channel_references(header, channels: list[int]) -> list[str]:
+    segment_refs = header.Segments[0].refName if header.Segments else []
+    ts_entries = header.TSInfo or []
+    references: list[str] = []
+    for channel in channels:
+        zero_based = channel - 1
+        ref_label = ""
+        try:
+            ref_label = segment_refs[zero_based]
+        except (IndexError, TypeError):
+            ref_label = ""
+        cleaned = _clean_channel_label(ref_label)
+        if not cleaned and 0 <= zero_based < len(ts_entries):
+            cleaned = _clean_channel_label(getattr(ts_entries[zero_based], "refSensor", ""))
+        references.append(cleaned)
+    return references
+
+
+def _ensure_unique_labels(channel_labels: list[str]) -> list[str]:
+    unique_labels: list[str] = []
+    used: set[str] = set()
+    next_suffix: dict[str, int] = {}
+
+    for label in channel_labels:
+        base = _clean_channel_label(label) or "Ch"
+        candidate = base
+        suffix = next_suffix.get(base, 2)
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        next_suffix[base] = suffix
+        used.add(candidate)
+        unique_labels.append(candidate)
+    return unique_labels
+
+
+def _disambiguate_duplicate_channel_labels(
+    header,
+    channels: list[int],
+    channel_labels: list[str],
+) -> list[str]:
+    if not channel_labels:
+        return channel_labels
+
+    label_positions: dict[str, list[int]] = {}
+    for idx, label in enumerate(channel_labels):
+        label_positions.setdefault(label, []).append(idx)
+
+    duplicates = {label: idxs for label, idxs in label_positions.items() if len(idxs) > 1}
+    if not duplicates:
+        return channel_labels
+
+    references = _channel_references(header, channels)
+    resolved = list(channel_labels)
+
+    for label, idxs in duplicates.items():
+        refs_for_label = {_clean_channel_label(references[idx]).upper() for idx in idxs if references[idx]}
+        if len(refs_for_label) < 2:
+            continue
+        for idx in idxs:
+            ref = _clean_channel_label(references[idx])
+            if ref:
+                resolved[idx] = f"{label}-{ref}"
+
+    return _ensure_unique_labels(resolved)
 
 
 def _select_channels(header, *, include_all: bool = False) -> list[int]:
@@ -1145,29 +1213,32 @@ def _notch_filter(
 def _categorize_channel(label: str) -> str:
     """Categorize a channel label into a type based on naming conventions."""
     label_upper = _clean_channel_label(label).upper()
+    base_label = re.sub(r"_\d+$", "", label_upper)
     
     # EOG (electrooculogram) channels
-    if label_upper in ("ROC", "LOC", "EOG", "HEOG", "VEOG", "LEOG", "REOG"):
+    if base_label in ("ROC", "LOC", "EOG", "HEOG", "VEOG", "LEOG", "REOG"):
         return "EOG"
     
     # EKG/ECG (electrocardiogram) channels
-    if label_upper in ("EKG", "ECG"):
+    if base_label in ("EKG", "ECG"):
         return "EKG"
     
     # Stimulus/trigger channels
-    if label_upper in ("PHOTIC", "STIM", "TRIGGER", "TRIG"):
+    if base_label in ("PHOTIC", "STIM", "TRIGGER", "TRIG"):
         return "Stimulus"
     
     # Reference channels (ear references, not midline EEG)
-    if label_upper in ("A1", "A2", "REF", "REFERENCE", "GROUND", "GND"):
+    if base_label in ("A1", "A2", "REF", "REFERENCE", "GROUND", "GND"):
         return "Reference"
 
     # Common EEG variants not covered by the standard position normalizer.
     # Pg1/Pg2 are posterior electrodes that appear in real KNF files.
-    if label_upper in ("PG1", "PG2"):
+    if base_label in ("PG1", "PG2"):
         return "EEG"
     
-    if _normalize_eeg_position(label_upper):
+    if _normalize_eeg_position(base_label):
+        return "EEG"
+    if _extract_eeg_label_from_derivation(base_label):
         return "EEG"
     
     # If we can't categorize it, it's "Other"

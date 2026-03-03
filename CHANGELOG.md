@@ -4,6 +4,13 @@
 
 -
 
+## 0.2.9 (2026-03-03)
+
+- Fix duplicate channel-label collisions in legacy `.eeg` recordings by disambiguating repeated labels with references when available (e.g. `Fp1-Ref`, `Fp1-AV`).
+- Add deterministic fallback suffixing (e.g. `_2`) when duplicates remain after reference disambiguation.
+- Improve channel-type categorization for suffixed/disambiguated labels (e.g. `Fp1-AV`, `Photic_2`).
+- Note: some legacy `.eeg` files legitimately contain repeated electrode names because multiple reference sets are stored in one recording (for example both `Ref` and `AV` channels).
+
 ## 0.2.8 (2026-03-03)
 
 - Fix critical header-parse bug resulting in hangup on some multichannel files by hardening UNKNOWN montage-catalog parsing.
