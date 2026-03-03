@@ -120,6 +120,13 @@ _UINT32 = struct.Struct("<I")
 _UINT64 = struct.Struct("<Q")
 _DOUBLE = struct.Struct("<d")
 
+# Guardrails for reverse-engineered hidden montage catalogs found in UNKNOWN
+# static packet families. Some recordings carry very large UNKNOWN blobs that
+# are not montage catalogs and can make title/token scanning prohibitively slow.
+UNKNOWN_MONTAGE_MIN_BLOB_BYTES = 1024
+UNKNOWN_MONTAGE_MAX_BLOB_BYTES = 8 * 1024 * 1024
+UNKNOWN_MONTAGE_MAX_TOKENS = 50_000
+
 
 # ---------------------------------------------------------------------------
 # Binary readers
@@ -962,11 +969,20 @@ def _parse_unknown_montage_catalog_rows(chunk: bytes) -> list[dict[str, object]]
     ]
     if not tokens:
         return rows
+    # Extremely large token streams are typically noisy payloads rather than
+    # actual montage catalogs; skip to avoid pathological parse times.
+    if len(tokens) > UNKNOWN_MONTAGE_MAX_TOKENS:
+        return rows
 
     def _collapse_spaces(text: str) -> str:
         return " ".join(text.split())
 
+    title_cache: dict[str, str | None] = {}
+
     def _extract_catalog_title(token: str) -> str | None:
+        cached = title_cache.get(token)
+        if token in title_cache:
+            return cached
         cleaned = _collapse_spaces(token)
         match = re.search(r"(\d{1,3}\s+KANALER)\b", cleaned.upper())
         if not match:
@@ -981,18 +997,30 @@ def _parse_unknown_montage_catalog_rows(chunk: bytes) -> list[dict[str, object]]
             if re.fullmatch(r"[A-Z]{1,4}\d{0,3}[A-Z]?", candidate) and (
                 any(ch.isdigit() for ch in candidate) or len(candidate) <= 4
             ):
+                title_cache[token] = None
                 return None
+            title_cache[token] = candidate
             return candidate
         count = int(match.group(1).split()[0])
-        return f"{count} kanaler"
+        result = f"{count} kanaler"
+        title_cache[token] = result
+        return result
+
+    channel_name_cache: dict[str, bool] = {}
 
     def _is_catalog_channel_name(token: str) -> bool:
+        if token in channel_name_cache:
+            return channel_name_cache[token]
         cleaned = _collapse_spaces(token)
         if not cleaned or cleaned.isdigit() or _extract_catalog_title(cleaned):
+            channel_name_cache[token] = False
             return False
         if len(cleaned) > 24:
+            channel_name_cache[token] = False
             return False
-        return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}", cleaned))
+        result = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}", cleaned))
+        channel_name_cache[token] = result
+        return result
 
     dedup: set[tuple[str, str]] = set()
     # Repeated noisy title hits can appear in the same blob (e.g. custom local
@@ -1138,7 +1166,7 @@ def _read_unknown_montage_catalog_rows(
         if not index_entries:
             continue
         total_len = sum(int(entry.sectionL) for entry in index_entries if entry.sectionL and entry.sectionL > 0)
-        if total_len < 1024 or total_len > 16 * 1024 * 1024:
+        if total_len < UNKNOWN_MONTAGE_MIN_BLOB_BYTES or total_len > UNKNOWN_MONTAGE_MAX_BLOB_BYTES:
             continue
         blob_chunks: list[bytes] = []
         for entry in index_entries:

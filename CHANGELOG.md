@@ -4,6 +4,11 @@
 
 -
 
+## 0.2.8 (2026-03-03)
+
+- Fix critical header-parse bug resulting in hangup on some multichannel files by hardening UNKNOWN montage-catalog parsing.
+- Add guardrails for oversized UNKNOWN blobs/token streams and lightweight caching in catalog title/channel checks.
+
 ## 0.2.7 (2026-02-26)
 
 - SSE 64-channel numeric-ID recovery and README updates.
