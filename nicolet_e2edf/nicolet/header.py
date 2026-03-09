@@ -8,7 +8,7 @@ from __future__ import annotations
 import struct
 import re
 from io import BytesIO
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -1767,15 +1767,140 @@ def _looks_like_channel_label(text: str) -> bool:
     if not text:
         return False
     candidate = text.strip()
-    if len(candidate) > 16 or any(ch.isspace() for ch in candidate):
+    if len(candidate) > 32:
         return False
-    upper = candidate.upper()
-    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-+")
-    if any(ch not in allowed for ch in upper):
+    upper = candidate.upper().replace(" ", "").replace("_", "")
+    parts = [part for part in re.split(r"[-/\\+,:;]", upper) if part]
+    if not parts:
         return False
-    if not any(ch.isdigit() for ch in upper):
-        return False
-    return True
+
+    eeg_prefixes = {
+        "FP",
+        "AF",
+        "F",
+        "FC",
+        "FT",
+        "C",
+        "CP",
+        "TP",
+        "T",
+        "P",
+        "PO",
+        "O",
+        "I",
+        "PG",
+    }
+    ref_tokens = {
+        "A1",
+        "A2",
+        "M1",
+        "M2",
+        "REF",
+        "REFERENCE",
+        "AV",
+        "AVG",
+        "GND",
+        "GROUND",
+        "ROC",
+        "LOC",
+        "EOG",
+        "EKG",
+        "ECG",
+    }
+
+    def _looks_like_endpoint(token: str) -> bool:
+        cleaned = re.sub(r"\(.*?\)", "", token).strip("-")
+        if not cleaned:
+            return False
+        if cleaned in ref_tokens:
+            return True
+        if cleaned.endswith("REF") and len(cleaned) > 3:
+            cleaned = cleaned[:-3].strip("-")
+        if cleaned.endswith("Z"):
+            return cleaned[:-1] in eeg_prefixes
+        match = re.fullmatch(r"([A-Z]{1,3})(\d{1,2})", cleaned)
+        if not match:
+            return False
+        prefix, number_text = match.groups()
+        return prefix in eeg_prefixes and 1 <= int(number_text) <= 12
+
+    return all(_looks_like_endpoint(part) for part in parts)
+
+
+def canonical_event_text(event: EventItem) -> tuple[str | None, str | None, str | None]:
+    """Return canonical event text fields for downstream outputs.
+
+    Events should already be normalized by the parser/conversion pipeline.
+    This helper just returns stripped text fields for output layers.
+    """
+    event_id = event.IDStr.strip() if event.IDStr else None
+    label = event.label.strip() if event.label else None
+    annotation = event.annotation.strip() if event.annotation else None
+
+    return event_id, label, annotation
+
+
+def _normalize_event(event: EventItem, event_type_info: Mapping[str, str] | None = None) -> None:
+    if event.label == "-":
+        event.label = ""
+    if event_type_info and event.GUID in event_type_info and event.IDStr == "UNKNOWN":
+        event.IDStr = event_type_info[event.GUID]
+
+    if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):
+        event.label = None
+    if event.IDStr == "Impedanse":
+        label_text = (event.label or "").lower()
+        if "impedance" in label_text or "impedanse" in label_text:
+            event.label = None
+    if event.IDStr == "Funn av langsom aktivitet":
+        event.IDStr = "Funn: langsom aktivitet"
+    if event.IDStr in {"Detections Active", "Detections Inactive"} and event.annotation:
+        event.label = f"{event.IDStr} - {event.annotation}"
+        event.annotation = None
+    if event.IDStr == "Funn" and event.label and _looks_like_channel_label(event.label):
+        event.label = None
+    if event.IDStr in {"UTBRUDD", "Utbrudd"}:
+        event.IDStr = "Utbrudd"
+        if event.label and _looks_like_channel_label(event.label):
+            event.label = None
+    if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
+        event.label = None
+    if event.IDStr == "Prune" and event.label:
+        lowered = event.label.lower()
+        if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
+            event.label = None
+    if event.label and event.IDStr:
+        if event.label in event.IDStr and len(event.label) < len(event.IDStr):
+            event.label = None
+        elif _clean_event_label(event.label).lower() == _clean_event_label(event.IDStr).lower():
+            event.label = None
+        elif event.IDStr.startswith("Funn:") and event.label.startswith("Funn av"):
+            event.label = None
+    if event.IDStr == "Seizure" and (not event.label or "Anfall" in event.label):
+        event.IDStr = "Anfall"
+    if event.IDStr == "Annotation" and not event.annotation:
+        cleaned = event.label.strip() if event.label else ""
+        if not cleaned or cleaned == "-":
+            event.IDStr = "Anmerkning"
+    if event.IDStr == "UNKNOWN":
+        cleaned = _clean_event_label(event.label or "")
+        if cleaned and cleaned != "-":
+            event.IDStr = cleaned
+        else:
+            raw = event.label.strip() if event.label else ""
+            if raw and raw != "-":
+                event.IDStr = raw
+
+
+def normalize_events(
+    events: Sequence[EventItem] | None,
+    *,
+    event_type_info: Mapping[str, str] | None = None,
+) -> list[EventItem]:
+    normalized = list(events) if events else []
+    for event in normalized:
+        _normalize_event(event, event_type_info)
+    return normalized
 
 
 def _read_event_type_info(
@@ -1952,38 +2077,7 @@ def read_nervus_header(path: str | Path):
                         main_index,
                         target_guids={event.GUID for event in events},
                     )
-                    if event_type_info:
-                        for event in events:
-                            if event.GUID in event_type_info and event.IDStr == "UNKNOWN":
-                                event.IDStr = event_type_info[event.GUID]
-                    for event in events:
-                        if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):
-                            event.label = None
-                        if event.IDStr == "UNKNOWN":
-                            cleaned = _clean_event_label(event.label or "")
-                            if cleaned and cleaned != "-":
-                                event.IDStr = cleaned
-                            else:
-                                raw = event.label.strip() if event.label else ""
-                                if raw and raw != "-":
-                                    event.IDStr = raw
-                        if event.IDStr in {"Detections Active", "Detections Inactive"} and event.annotation:
-                            event.label = f"{event.IDStr} - {event.annotation}"
-                            event.annotation = None
-                        if event.IDStr == "Seizure" and (not event.label or "Anfall" in event.label):
-                            event.IDStr = "Anfall"
-                        if event.IDStr == "Funn" and event.label and _looks_like_channel_label(event.label):
-                            event.label = None
-                        if event.IDStr in {"UTBRUDD", "Utbrudd"}:
-                            event.IDStr = "Utbrudd"
-                            if event.label and _looks_like_channel_label(event.label):
-                                event.label = None
-                        if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
-                            event.label = None
-                        if event.IDStr == "Prune" and event.label:
-                            lowered = event.label.lower()
-                            if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
-                                event.label = None
+                    events = normalize_events(events, event_type_info=event_type_info)
                     header = NervusHeader(
                         filename=filename,
                         StaticPackets=static_packets,
@@ -2044,61 +2138,7 @@ def read_nervus_header(path: str | Path):
             main_index,
             target_guids={event.GUID for event in events},
         )
-        if event_type_info:
-            for event in events:
-                if event.label == "-":
-                    event.label = ""
-                if event.GUID in event_type_info:
-                    if event.IDStr == "UNKNOWN":
-                        event.IDStr = event_type_info[event.GUID]
-                    if not event.label and event.IDStr == "UNKNOWN":
-                        event.label = event_type_info[event.GUID]
-        for event in events:
-            if event.label and not any(ch.isascii() and ch.isalnum() for ch in event.label):
-                event.label = None
-            if event.IDStr == "Impedanse":
-                label_text = (event.label or "").lower()
-                if "impedance" in label_text or "impedanse" in label_text:
-                    event.label = None
-            if event.IDStr == "Funn av langsom aktivitet":
-                event.IDStr = "Funn: langsom aktivitet"
-            if event.IDStr in {"Detections Active", "Detections Inactive"} and event.annotation:
-                event.label = f"{event.IDStr} - {event.annotation}"
-                event.annotation = None
-            if event.IDStr == "Funn" and event.label and _looks_like_channel_label(event.label):
-                event.label = None
-            if event.IDStr in {"UTBRUDD", "Utbrudd"}:
-                event.IDStr = "Utbrudd"
-                if event.label and _looks_like_channel_label(event.label):
-                    event.label = None
-            if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
-                event.label = None
-            if event.IDStr == "Prune" and event.label:
-                lowered = event.label.lower()
-                if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
-                    event.label = None
-            if event.label and event.IDStr:
-                if event.label in event.IDStr and len(event.label) < len(event.IDStr):
-                    event.label = None
-                elif _clean_event_label(event.label).lower() == _clean_event_label(event.IDStr).lower():
-                    event.label = None
-                elif event.IDStr.startswith("Funn:") and event.label.startswith("Funn av"):
-                    event.label = None
-            if event.IDStr == "Seizure" and (not event.label or "Anfall" in event.label):
-                event.IDStr = "Anfall"
-            if event.IDStr == "Annotation" and not event.annotation:
-                cleaned = event.label.strip() if event.label else ""
-                if not cleaned or cleaned == "-":
-                    event.IDStr = "Anmerkning"
-        for event in events:
-            if event.IDStr == "UNKNOWN":
-                cleaned = _clean_event_label(event.label or "")
-                if cleaned and cleaned != "-":
-                    event.IDStr = cleaned
-                else:
-                    raw = event.label.strip() if event.label else ""
-                    if raw and raw != "-":
-                        event.IDStr = raw
+        events = normalize_events(events, event_type_info=event_type_info)
 
     nrv_header = NervusHeader(
         filename=filename,

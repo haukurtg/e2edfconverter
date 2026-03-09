@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .header import canonical_event_text
 from .types import EventItem
 
 
@@ -172,14 +173,14 @@ def _format_event_tal(event: EventItem, recording_start: datetime) -> bytes:
     if event.duration is not None and event.duration > 0:
         duration = f"\x15{event.duration:.6f}"
     
-    # Build annotation text
+    event_id, label, annotation = canonical_event_text(event)
     description_parts = []
-    if event.label:
-        description_parts.append(event.label)
-    if event.annotation:
-        description_parts.append(event.annotation)
-    elif event.IDStr and not description_parts:
-        description_parts.append(event.IDStr)
+    if label:
+        description_parts.append(label)
+    if annotation:
+        description_parts.append(annotation)
+    elif event_id and not description_parts:
+        description_parts.append(event_id)
     text = ": ".join(part for part in description_parts if part) or "Event"
     
     # TAL format: <onset><duration>\x14<annotation>\x14\x00

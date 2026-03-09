@@ -236,6 +236,79 @@ def test_resample_and_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert sidecar["annotations"][0]["onset_seconds"] == 1.0
 
 
+def test_prune_channel_label_is_suppressed_in_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pyedflib = pytest.importorskip("pyedflib", reason="pyedflib required for EDF annotation checks")
+
+    fake_header = NervusHeader(filename=tmp_path / "case.e")
+    fake_header.matchingChannels = [1]
+    fake_header.targetSamplingRate = 100.0
+    fake_header.Segments = [
+        SegmentInfo(
+            dateOLE=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 0),
+            duration=2.0,
+            chName=["C3"],
+            refName=["REF"],
+            samplingRate=np.array([100.0]),
+            scale=np.ones(1),
+            sampleCount=np.array([200]),
+        )
+    ]
+    fake_header.startDateTime = datetime(2021, 5, 5, 8, 30, 0)
+    fake_header.Events = [
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 1),
+            duration=1.5,
+            user="user",
+            GUID="{GUID}",
+            label="Fz-AV",
+            IDStr="Prune",
+            annotation=None,
+        )
+    ]
+
+    def _fake_read_header(path: Path):
+        return {"Fs": 100.0}, fake_header
+
+    def _fake_read_data(path: Path, header: NervusHeader, channels=None, begsample=None, endsample=None):
+        return np.arange(200, dtype=np.float32).reshape(1, 200)
+
+    monkeypatch.setattr(cli, "read_nervus_header", _fake_read_header)
+    monkeypatch.setattr(cli, "read_nervus_data", _fake_read_data)
+
+    recording = tmp_path / "case.e"
+    recording.write_bytes(b"\x00")
+    output_dir = tmp_path / "out"
+
+    exit_code = cli.main(["--in", str(recording), "--out", str(output_dir), "--json-sidecar"])
+    assert exit_code == 0
+
+    sidecar_path = output_dir / "case.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["events"] == [
+        {
+            "onset_seconds": 1.0,
+            "duration_seconds": 1.5,
+            "type": "Prune",
+            "label": None,
+        }
+    ]
+
+    reader = pyedflib.EdfReader(str(output_dir / "case.edf"))
+    try:
+        onsets, durations, descriptions = reader.readAnnotations()
+    finally:
+        reader.close()
+
+    descriptions = list(descriptions)
+    assert "Prune" in descriptions
+    assert "Fz-AV" not in descriptions
+
+
 def test_montage_mapping_recovers_numeric_channel_labels(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

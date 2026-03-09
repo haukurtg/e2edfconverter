@@ -15,7 +15,7 @@ import numpy as np
 
 from .data import read_nervus_data
 from .edf_writer import write_edf
-from .header import read_nervus_header
+from .header import canonical_event_text, normalize_events, read_nervus_header
 from .montage_recovery import (
     DIRECT_ID_NAME_SOURCES,
     build_montage_recovery_plan,
@@ -1306,11 +1306,11 @@ def _write_json_sidecar(
             if start_time and event.date:
                 onset = (event.date - start_time).total_seconds()
             
-            label = event.label.strip() if event.label else None
+            event_id, label, annotation = canonical_event_text(event)
             
             # Separate annotations (with text) from system events
-            if event.annotation:
-                clean_text = event.annotation.strip()
+            if annotation:
+                clean_text = annotation.strip()
                 if clean_text:
                     annotations.append({
                         "onset_seconds": onset,
@@ -1320,14 +1320,14 @@ def _write_json_sidecar(
             else:
                 # Skip noisy events: UNKNOWN type with placeholder label "-" or no label
                 # These are typically review/selection markers without clinical value
-                if event.IDStr == "UNKNOWN" and (label == "-" or label is None):
+                if event_id == "UNKNOWN" and (label == "-" or label is None):
                     continue
                 
                 # For meaningful system events, don't include user (reduces noise)
                 system_events.append({
                     "onset_seconds": onset,
                     "duration_seconds": event.duration if event.duration else None,
-                    "type": event.IDStr,
+                    "type": event_id,
                     "label": label if label != "-" else None,
                 })
     
@@ -1530,6 +1530,7 @@ def convert_file(
             segment_events = _segment_events(nrv_header.Events, segment, seg_idx)
             if vendor_style:
                 segment_events = _filter_vendor_events(segment_events)
+            segment_events = normalize_events(segment_events)
             segment_output = _segment_output_path(resolved_output, seg_idx, len(segments))
             segment_start = segment.date or nrv_header.startDateTime
             if status_cb:
@@ -1609,6 +1610,7 @@ def convert_file(
     )
     if vendor_style:
         adjusted_events = _filter_vendor_events(adjusted_events)
+    adjusted_events = normalize_events(adjusted_events)
     if status_cb:
         status_cb("write edf")
     write_edf(
