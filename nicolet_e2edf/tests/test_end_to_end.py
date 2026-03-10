@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from nicolet_e2edf.nicolet import cli
+from nicolet_e2edf.nicolet.header import normalize_events
 from nicolet_e2edf.nicolet.types import EventItem, NervusHeader, SegmentInfo
 
 
@@ -265,7 +266,7 @@ def test_prune_channel_label_is_suppressed_in_outputs(
             duration=1.5,
             user="user",
             GUID="{GUID}",
-            label="Fz-AV",
+            label="Fp1-SFp1",
             IDStr="Prune",
             annotation=None,
         )
@@ -306,7 +307,27 @@ def test_prune_channel_label_is_suppressed_in_outputs(
 
     descriptions = list(descriptions)
     assert "Prune" in descriptions
-    assert "Fz-AV" not in descriptions
+    assert "Fp1-SFp1" not in descriptions
+
+
+def test_normalize_events_preserves_raw_prune_label_but_clears_export_label() -> None:
+    events = normalize_events([
+        EventItem(
+            dateOLE=0.0,
+            dateFraction=0.0,
+            date=datetime(2021, 5, 5, 8, 30, 1),
+            duration=1.5,
+            user="user",
+            GUID="{GUID}",
+            label="Fp1-SFp1",
+            IDStr="Prune",
+            annotation=None,
+        )
+    ])
+
+    assert len(events) == 1
+    assert events[0].label is None
+    assert events[0].rawLabel == "Fp1-SFp1"
 
 
 def test_montage_mapping_recovers_numeric_channel_labels(

@@ -79,6 +79,7 @@ class EventItem:
     annotation: str | None = None
     segmentIndex: int | None = None
     isEpoch: bool | None = None
+    rawLabel: str | None = None
 
 
 @dataclass(**DATACLASS_KWARGS)

@@ -148,6 +148,7 @@ def _read_annotations(
                     label=label,
                     IDStr="Annotation",
                     annotation=annotation,
+                    rawLabel=label,
                 )
             )
         else:

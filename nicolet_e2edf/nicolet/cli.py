@@ -1447,6 +1447,7 @@ def _adjust_events_for_gaps(
                 annotation=event.annotation,
                 segmentIndex=event.segmentIndex,
                 isEpoch=event.isEpoch,
+                rawLabel=event.rawLabel,
             )
         )
         key = (event_id, round(onset, 3), event_label or "")

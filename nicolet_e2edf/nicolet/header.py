@@ -1666,6 +1666,7 @@ def _read_events(
                 annotation=annotation,
                 segmentIndex=seg_index,
                 isEpoch=is_epoch,
+                rawLabel=label or None,
             )
         )
         offset += packet_length
@@ -1841,6 +1842,8 @@ def canonical_event_text(event: EventItem) -> tuple[str | None, str | None, str 
 
 
 def _normalize_event(event: EventItem, event_type_info: Mapping[str, str] | None = None) -> None:
+    if event.rawLabel is None and event.label:
+        event.rawLabel = event.label
     if event.label == "-":
         event.label = ""
     if event_type_info and event.GUID in event_type_info and event.IDStr == "UNKNOWN":
@@ -1865,10 +1868,11 @@ def _normalize_event(event: EventItem, event_type_info: Mapping[str, str] | None
             event.label = None
     if event.IDStr == "SW" and event.label and _looks_like_channel_label(event.label):
         event.label = None
-    if event.IDStr == "Prune" and event.label:
-        lowered = event.label.lower()
-        if _looks_like_channel_label(event.label) or "marks epochs" in lowered:
-            event.label = None
+    if event.IDStr == "Prune":
+        # Nicolet prune packets often carry derivation/montage text in the label
+        # field (for example "Fz-AV" or "Fp1-SFp1"). That is raw packet metadata,
+        # not the semantic event text we want to export downstream.
+        event.label = None
     if event.label and event.IDStr:
         if event.label in event.IDStr and len(event.label) < len(event.IDStr):
             event.label = None
