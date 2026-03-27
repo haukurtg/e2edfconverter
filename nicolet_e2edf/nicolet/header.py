@@ -119,6 +119,11 @@ _UINT16 = struct.Struct("<H")
 _UINT32 = struct.Struct("<I")
 _UINT64 = struct.Struct("<Q")
 _DOUBLE = struct.Struct("<d")
+_UNKNOWN_MONTAGE_TITLE_RE = re.compile(r"(\d{1,3}\s+KANALER)\b")
+_UNKNOWN_MONTAGE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]{2,31}")
+_UNKNOWN_MONTAGE_CHANNEL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}")
+_UNKNOWN_MONTAGE_OBVIOUS_LABEL_RE = re.compile(r"[A-Z]{1,4}\d{0,3}[A-Z]?")
+_UNKNOWN_MONTAGE_LEADING_INT_RE = re.compile(r"(\d+)")
 
 # Guardrails for reverse-engineered hidden montage catalogs found in UNKNOWN
 # static packet families. Some recordings carry very large UNKNOWN blobs that
@@ -962,11 +967,16 @@ def _parse_unknown_montage_catalog_rows(chunk: bytes) -> list[dict[str, object]]
     if not chunk:
         return rows
 
-    tokens = [
-        text.strip()
-        for text in chunk.decode("utf-16le", errors="ignore").split("\x00")
-        if text and text.strip()
-    ]
+    tokens = []
+    for text in chunk.decode("utf-16le", errors="ignore").split("\x00"):
+        if not text:
+            continue
+        stripped = text.strip()
+        if not stripped:
+            continue
+        cleaned = " ".join(stripped.split())
+        if cleaned:
+            tokens.append(cleaned)
     if not tokens:
         return rows
     # Extremely large token streams are typically noisy payloads rather than
@@ -974,53 +984,38 @@ def _parse_unknown_montage_catalog_rows(chunk: bytes) -> list[dict[str, object]]
     if len(tokens) > UNKNOWN_MONTAGE_MAX_TOKENS:
         return rows
 
-    def _collapse_spaces(text: str) -> str:
-        return " ".join(text.split())
-
+    unique_tokens = set(tokens)
     title_cache: dict[str, str | None] = {}
-
-    def _extract_catalog_title(token: str) -> str | None:
-        cached = title_cache.get(token)
-        if token in title_cache:
-            return cached
-        cleaned = _collapse_spaces(token)
-        match = re.search(r"(\d{1,3}\s+KANALER)\b", cleaned.upper())
-        if not match:
-            # Some hidden catalogs use custom all-caps names
-            # with binary garbage prefixed inside the same UTF-16 token.
-            name_candidates = re.findall(r"[A-Za-z][A-Za-z0-9 _-]{2,31}", cleaned)
-            if not name_candidates:
-                return None
-            candidate = " ".join(name_candidates[-1].upper().split())
-            # Reject obvious channel labels so we don't start parsing in the
-            # middle of a channel-name sequence (e.g. VTP1, F3).
-            if re.fullmatch(r"[A-Z]{1,4}\d{0,3}[A-Z]?", candidate) and (
-                any(ch.isdigit() for ch in candidate) or len(candidate) <= 4
-            ):
-                title_cache[token] = None
-                return None
-            title_cache[token] = candidate
-            return candidate
-        count = int(match.group(1).split()[0])
-        result = f"{count} kanaler"
-        title_cache[token] = result
-        return result
+    is_digit_cache: dict[str, bool] = {}
+    for token in unique_tokens:
+        is_digit_cache[token] = token.isdigit()
+        match = _UNKNOWN_MONTAGE_TITLE_RE.search(token.upper())
+        if match:
+            count = int(match.group(1).split()[0])
+            title_cache[token] = f"{count} kanaler"
+            continue
+        # Some hidden catalogs use custom all-caps names
+        # with binary garbage prefixed inside the same UTF-16 token.
+        name_candidates = _UNKNOWN_MONTAGE_NAME_RE.findall(token)
+        if not name_candidates:
+            title_cache[token] = None
+            continue
+        candidate = " ".join(name_candidates[-1].upper().split())
+        # Reject obvious channel labels so we don't start parsing in the
+        # middle of a channel-name sequence (e.g. VTP1, F3).
+        if _UNKNOWN_MONTAGE_OBVIOUS_LABEL_RE.fullmatch(candidate) and (
+            any(ch.isdigit() for ch in candidate) or len(candidate) <= 4
+        ):
+            title_cache[token] = None
+            continue
+        title_cache[token] = candidate
 
     channel_name_cache: dict[str, bool] = {}
-
-    def _is_catalog_channel_name(token: str) -> bool:
-        if token in channel_name_cache:
-            return channel_name_cache[token]
-        cleaned = _collapse_spaces(token)
-        if not cleaned or cleaned.isdigit() or _extract_catalog_title(cleaned):
+    for token in unique_tokens:
+        if not token or is_digit_cache[token] or title_cache[token] or len(token) > 24:
             channel_name_cache[token] = False
-            return False
-        if len(cleaned) > 24:
-            channel_name_cache[token] = False
-            return False
-        result = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}", cleaned))
-        channel_name_cache[token] = result
-        return result
+            continue
+        channel_name_cache[token] = bool(_UNKNOWN_MONTAGE_CHANNEL_RE.fullmatch(token))
 
     dedup: set[tuple[str, str]] = set()
     # Repeated noisy title hits can appear in the same blob (e.g. custom local
@@ -1048,31 +1043,31 @@ def _parse_unknown_montage_catalog_rows(chunk: bytes) -> list[dict[str, object]]
 
     i = 0
     while i < len(tokens):
-        montage_name = _extract_catalog_title(tokens[i])
+        montage_name = title_cache[tokens[i]]
         if not montage_name:
             i += 1
             continue
 
-        expected_match = re.match(r"(\d+)", montage_name)
+        expected_match = _UNKNOWN_MONTAGE_LEADING_INT_RE.match(montage_name)
         expected_count = int(expected_match.group(1)) if expected_match else 0
         pairs: list[tuple[str, str]] = []
         seen_signal_ids: set[str] = set()
         j = i + 1
         misses = 0
         while j < len(tokens):
-            if _extract_catalog_title(tokens[j]) and pairs:
+            if title_cache[tokens[j]] and pairs:
                 break
             if j + 1 < len(tokens):
-                left = _collapse_spaces(tokens[j])
-                right = _collapse_spaces(tokens[j + 1])
-                if _is_catalog_channel_name(left) and right.isdigit():
+                left = tokens[j]
+                right = tokens[j + 1]
+                if channel_name_cache[left] and is_digit_cache[right]:
                     if right not in seen_signal_ids:
                         seen_signal_ids.add(right)
                         pairs.append((left, right))
                     j += 2
                     misses = 0
                     continue
-                if left.isdigit() and _is_catalog_channel_name(right):
+                if is_digit_cache[left] and channel_name_cache[right]:
                     if left not in seen_signal_ids:
                         seen_signal_ids.add(left)
                         pairs.append((right, left))

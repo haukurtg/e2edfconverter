@@ -452,7 +452,7 @@ def _extract_numeric_placeholder_id(label: object) -> str | None:
 def _recover_sse_64_numeric_id_labels(header: object, channel_labels: list[str]) -> list[str] | None:
     """Apply a fixed SSE 64-contact numeric-ID map (63 EEG + channel ID 64 = EKG).
 
-    This is intentionally strict and only triggers for in-house SSE recordings
+    This is intentionally strict and only triggers for matching SSE recordings
     whose channel labels are an exact permutation of placeholder IDs 1..64
     (optionally in ``N-Ref`` form).
     """

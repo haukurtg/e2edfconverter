@@ -4,6 +4,11 @@
 
 -
 
+## 0.3.0 (2026-03-27)
+
+- Speed up hidden `UNKNOWN` montage-catalog parsing by normalizing and classifying UTF-16 tokens once per blob
+- Add local profiling and regression-equivalence helper scripts under `tools/` for stage timing and exact baseline-vs-current comparisons.
+
 ## 0.2.9 (2026-03-03)
 
 - Fix duplicate channel-label collisions in legacy `.eeg` recordings by disambiguating repeated labels with references when available (e.g. `Fp1-Ref`, `Fp1-AV`).

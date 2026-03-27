@@ -7,8 +7,6 @@ A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format
 > **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Since then, we've added substantial GUID/event and channel ID parsing logic through our own reverse‑engineering work. Thank you to the FieldTrip team!
 
 > **Note**: Some of our reverse‑engineered event labels are (unfortunately) in Norwegian.
->
-> **Scope note**: This converter is primarily an in-house tool and includes some site-specific recovery heuristics (for example, fixed numeric-ID channel mappings used in our local recordings). These defaults improve our internal datasets, but may not match naming conventions used at other institutions.
 
 ## Quick Start
 
@@ -114,6 +112,26 @@ Contributions are welcome! If you're working on the EDF writer or want to unders
 
 - **EDF+ Specification**: A copy of the full EDF+ specification is included at [`docs/EDF+ specification.pdf`](docs/EDF+%20specification.pdf). The official spec is also available at [edfplus.info](https://www.edfplus.info/specs/edfplus.html).
 - **Tests**: Run `uv run pytest` to verify EDF+ compliance. We use PyEDFlib as a strict validator.
+
+## Profiling And Regression Checks
+
+Two helper scripts are included for speed work that must not change output:
+
+- `tools/profile_conversion_stages.py`
+  - Runs an in-process conversion profile for one or more `.e` files.
+  - Breaks runtime into rough stages such as header read, waveform read, EDF write, and JSON write.
+- `tools/validate_regression_equivalence.py`
+  - Re-converts a regression corpus and compares the result against a known-good baseline.
+  - Checks EDF byte equality plus exact equality of sidecar `channels`, `events`, and `annotations` (ignoring only the expected `edf_file` output path field).
+
+Recommended workflow for performance changes:
+
+1. Profile on a small representative local corpus.
+2. Make the optimization.
+3. Run `uv run pytest`.
+4. Run the regression-equivalence validator before merging.
+
+
 
 ## License
 
