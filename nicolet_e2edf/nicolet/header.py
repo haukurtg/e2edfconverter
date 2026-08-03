@@ -226,25 +226,31 @@ def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[
     handle.seek(188_664, 0)
     lqi = int(qi_index.get("LQi", 0) or 0)
     entries: list[dict[str, object]] = []
-    for _ in range(lqi):
-        index_low = _read_u16(handle)
-        index_high = _read_u16(handle)
-        misc1 = _read_u32(handle)
-        index_idx = _read_u32(handle)
-        misc2 = [_read_u32(handle) for _ in range(3)]
-        section_idx = _read_u32(handle)
-        misc3 = _read_u32(handle)
-        offset = _read_u64(handle)
-        block_and_section = _read_u64(handle)
+    record_struct = struct.Struct("<HHIIIIIIIQQI")
+    raw = _read_exact(handle, lqi * record_struct.size)
+    for values in record_struct.iter_unpack(raw):
+        (
+            index_low,
+            index_high,
+            misc1,
+            index_idx,
+            misc2_0,
+            misc2_1,
+            misc2_2,
+            section_idx,
+            misc3,
+            offset,
+            block_and_section,
+            data_len,
+        ) = values
         block_len = block_and_section & 0xFFFFFFFF
         section_len = (block_and_section >> 32) & 0xFFFFFFFF
-        data_len = _read_u32(handle)
         entries.append(
             {
                 "index": (index_low, index_high),
                 "misc1": misc1,
                 "indexIdx": index_idx,
-                "misc2": misc2,
+                "misc2": [misc2_0, misc2_1, misc2_2],
                 "sectionIdx": section_idx,
                 "misc3": misc3,
                 "offset": offset,
@@ -260,14 +266,12 @@ def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[
     entries: list[MainIndexEntry] = []
     next_pointer = index_idx
     read_entries = 0
+    record_struct = struct.Struct("<QQQ")
     while read_entries < nr_entries:
         handle.seek(next_pointer, 0)
         nr_idx = _read_u64(handle)
-        chunk = [_read_u64(handle) for _ in range(3 * nr_idx)]
-        for i in range(int(nr_idx)):
-            section_idx = chunk[3 * i]
-            offset = chunk[3 * i + 1]
-            block_l_raw = chunk[3 * i + 2]
+        raw = _read_exact(handle, int(nr_idx) * record_struct.size)
+        for section_idx, offset, block_l_raw in record_struct.iter_unpack(raw):
             block_len = block_l_raw & 0xFFFFFFFF
             section_len = (block_l_raw >> 32) & 0xFFFFFFFF
             entries.append(
@@ -2019,7 +2023,7 @@ def _build_public_header(nrv_header: NervusHeader) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def read_nervus_header(path: str | Path):
+def read_nervus_header(path: str | Path, *, include_qi_index2: bool = True):
     filename = Path(path)
     if filename.suffix.lower() == ".eeg":
         from .legacy_eeg import read_legacy_header as read_legacy_eeg_header
@@ -2117,7 +2121,7 @@ def read_nervus_header(path: str | Path):
 
         static_packets = _read_static_packets(handle)
         qi_index = _read_qi_index(handle, len(static_packets))
-        qi_index2 = _read_qi_index2(handle, qi_index)
+        qi_index2 = _read_qi_index2(handle, qi_index) if include_qi_index2 else []
         main_index = _read_main_index(handle, index_idx, int(qi_index["nrEntries"]))
         info_guids = _read_info_guids(handle, static_packets, main_index)
         dynamic_packets = _read_dynamic_packets(handle, static_packets, main_index)
