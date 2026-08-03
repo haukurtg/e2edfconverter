@@ -4,6 +4,13 @@
 
 -
 
+## 0.4.0 (2026-08-03)
+
+- Add an explicitly opt-in, zero-gap physical-read coalescer for modern `.e` waveform data. It uses bounded spans of at most 8 MiB and is enabled with `coalesce_reads=True` or `NICOLET_E2EDF_COALESCE_READS=1`; the default reader remains unchanged.
+- Decode QIIndex2 and MainIndex records in bulk, while retaining QIIndex2 in the public header API by default and skipping that unused table during conversion.
+- Vectorise per-record EDF signal quantisation without changing the established rounding, clipping, non-finite replacement, channel order or final-record padding bytes.
+- Reject malformed or unsafe bulk index counts before allocation, and add byte-golden and deterministic differential coverage for parser, reader and writer boundaries.
+
 ## 0.3.0 (2026-03-27)
 
 - Speed up hidden `UNKNOWN` montage-catalog parsing by normalizing and classifying UTF-16 tokens once per blob

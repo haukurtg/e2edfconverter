@@ -37,6 +37,35 @@ uv sync
 uv run nicolet-e2edf --help
 ```
 
+### Optimised reads in version 0.4.0
+
+Version 0.4.0 includes faster bulk index decoding and vectorised EDF record
+quantisation. It also carries an optional physical-read coalescer for modern
+`.e` waveform data. The coalescer is **off by default** in this release; normal
+CLI and library calls retain the established reader unless it is explicitly
+enabled.
+
+For CLI conversion, set the documented environment variable for the conversion
+process:
+
+```bash
+NICOLET_E2EDF_COALESCE_READS=1 uv run --isolated nicolet-e2edf \
+    --in /path/to/recording.e --out ./edf_output
+```
+
+Library callers can opt in directly:
+
+```python
+data = read_nervus_data(path, header, coalesce_reads=True)
+```
+
+The coalescer combines only overlapping or exactly adjacent physical byte
+ranges, never reads across a positive gap, and limits each physical read to 8
+MiB. An explicit `coalesce_reads=False` overrides the environment variable.
+Legacy `.eeg` dispatch is unchanged. There is intentionally no CLI flag and no
+default activation in 0.4.0; deployment wrappers must pass the environment
+setting explicitly if they choose to enable the qualified path.
+
 ### Interactive Mode
 
 For a guided experience with menus and progress bars:
