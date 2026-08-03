@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import struct
 import re
-from io import BytesIO
+import struct
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 
@@ -119,6 +119,7 @@ _UINT16 = struct.Struct("<H")
 _UINT32 = struct.Struct("<I")
 _UINT64 = struct.Struct("<Q")
 _DOUBLE = struct.Struct("<d")
+_MAX_BULK_INDEX_RECORDS = 1_000_000
 _UNKNOWN_MONTAGE_TITLE_RE = re.compile(r"(\d{1,3}\s+KANALER)\b")
 _UNKNOWN_MONTAGE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]{2,31}")
 _UNKNOWN_MONTAGE_CHANNEL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}")
@@ -225,6 +226,11 @@ def _read_qi_index(handle: BinaryIO, nr_static_packets: int) -> dict[str, object
 def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[str, object]]:
     handle.seek(188_664, 0)
     lqi = int(qi_index.get("LQi", 0) or 0)
+    if lqi < 0 or lqi > _MAX_BULK_INDEX_RECORDS:
+        raise ValueError(
+            f"QIIndex2 record count {lqi} exceeds the safe limit "
+            f"of {_MAX_BULK_INDEX_RECORDS}"
+        )
     entries: list[dict[str, object]] = []
     record_struct = struct.Struct("<HHIIIIIIIQQI")
     raw = _read_exact(handle, lqi * record_struct.size)
@@ -263,13 +269,34 @@ def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[
 
 
 def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[MainIndexEntry]:
+    if nr_entries < 0 or nr_entries > _MAX_BULK_INDEX_RECORDS:
+        raise ValueError(
+            f"MainIndex record count {nr_entries} exceeds the safe limit "
+            f"of {_MAX_BULK_INDEX_RECORDS}"
+        )
     entries: list[MainIndexEntry] = []
     next_pointer = index_idx
     read_entries = 0
     record_struct = struct.Struct("<QQQ")
+    seen_pointers: set[int] = set()
     while read_entries < nr_entries:
+        if next_pointer in seen_pointers:
+            raise ValueError(f"MainIndex contains a repeated block pointer: {next_pointer}")
+        seen_pointers.add(next_pointer)
         handle.seek(next_pointer, 0)
         nr_idx = _read_u64(handle)
+        if nr_idx == 0:
+            raise ValueError("MainIndex block declares zero records before the index is complete")
+        if nr_idx > _MAX_BULK_INDEX_RECORDS:
+            raise ValueError(
+                f"MainIndex block record count {nr_idx} exceeds the safe limit "
+                f"of {_MAX_BULK_INDEX_RECORDS}"
+            )
+        remaining = nr_entries - read_entries
+        if nr_idx > remaining:
+            raise ValueError(
+                f"MainIndex block declares {nr_idx} records with only {remaining} expected"
+            )
         raw = _read_exact(handle, int(nr_idx) * record_struct.size)
         for section_idx, offset, block_l_raw in record_struct.iter_unpack(raw):
             block_len = block_l_raw & 0xFFFFFFFF
@@ -284,6 +311,8 @@ def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[
             )
         next_pointer = _read_u64(handle)
         read_entries += int(nr_idx)
+        if read_entries < nr_entries and next_pointer == 0:
+            raise ValueError("MainIndex chain ended before the declared record count")
     return entries
 
 

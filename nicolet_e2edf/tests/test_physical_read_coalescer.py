@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -271,3 +272,87 @@ def test_environment_opt_in_and_explicit_false_override(
     default_result = read_nervus_data(recording, header, coalesce_reads=False)
     np.testing.assert_array_equal(env_result, default_result)
     assert calls == 1
+
+
+def test_deterministic_random_differential_windows_and_truncation(tmp_path: Path) -> None:
+    rng = np.random.default_rng(20260803)
+    for case_idx in range(75):
+        channel_count = int(rng.integers(1, 5))
+        sample_count = int(rng.integers(2, 65))
+        section_specs: list[dict[str, object]] = []
+        logical_sections: list[list[dict[str, object]]] = []
+        scales = rng.choice(np.asarray([-2.0, -0.5, 0.25, 1.0, 3.0]), channel_count)
+        offsets = rng.choice(np.asarray([-11.0, 0.0, 7.0]), channel_count)
+
+        for channel in range(channel_count):
+            raw = rng.integers(-32768, 32768, size=sample_count, dtype=np.int16).astype("<i2")
+            possible = np.arange(1, sample_count)
+            split_count = min(int(rng.integers(1, 6)), sample_count)
+            cuts = (
+                sorted(rng.choice(possible, size=split_count - 1, replace=False).tolist())
+                if split_count > 1
+                else []
+            )
+            starts = [0, *cuts]
+            ends = [*cuts, sample_count]
+            channel_specs = []
+            for logical_idx, (start, end) in enumerate(zip(starts, ends, strict=True)):
+                spec = {
+                    "section": channel + 1,
+                    "logical_idx": logical_idx,
+                    "raw": raw[start:end],
+                }
+                section_specs.append(spec)
+                channel_specs.append(spec)
+            logical_sections.append(channel_specs)
+
+        physical_order = list(section_specs)
+        rng.shuffle(physical_order)
+        payload = bytearray()
+        for spec in physical_order:
+            payload.extend(rng.bytes(int(rng.choice(np.asarray([0, 2, 4])))))
+            spec["offset"] = len(payload)
+            payload.extend(np.asarray(spec["raw"], dtype="<i2").tobytes())
+
+        if case_idx % 4 == 0 and payload:
+            payload = payload[: int(rng.integers(0, len(payload) + 1))]
+        recording = tmp_path / f"random-{case_idx}.e"
+        recording.write_bytes(payload)
+        entries: list[tuple[int, int, int]] = []
+        for channel_specs in logical_sections:
+            for spec in channel_specs:
+                entries.append(
+                    (
+                        cast(int, spec["section"]),
+                        cast(int, spec["offset"]),
+                        int(np.asarray(spec["raw"]).size),
+                    )
+                )
+        header = _header(
+            recording,
+            entries,
+            [_segment([sample_count] * channel_count, scales.tolist(), offsets.tolist())],
+        )
+
+        windows = [(1, sample_count)]
+        windows.extend(
+            (
+                start := int(rng.integers(1, sample_count + 1)),
+                int(rng.integers(start, sample_count + 1)),
+            )
+            for _ in range(3)
+        )
+        for begsample, endsample in windows:
+            old = read_nervus_data(recording, header, begsample=begsample, endsample=endsample)
+            coalesced = read_nervus_data(
+                recording,
+                header,
+                begsample=begsample,
+                endsample=endsample,
+                coalesce_reads=True,
+            )
+            np.testing.assert_array_equal(
+                coalesced,
+                old,
+                err_msg=f"case={case_idx} window={begsample}:{endsample}",
+            )
