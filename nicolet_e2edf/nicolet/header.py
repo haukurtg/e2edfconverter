@@ -119,7 +119,6 @@ _UINT16 = struct.Struct("<H")
 _UINT32 = struct.Struct("<I")
 _UINT64 = struct.Struct("<Q")
 _DOUBLE = struct.Struct("<d")
-_MAX_BULK_INDEX_RECORDS = 1_000_000
 _UNKNOWN_MONTAGE_TITLE_RE = re.compile(r"(\d{1,3}\s+KANALER)\b")
 _UNKNOWN_MONTAGE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]{2,31}")
 _UNKNOWN_MONTAGE_CHANNEL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+\-_/ ]{0,23}")
@@ -144,6 +143,14 @@ def _read_exact(handle: BinaryIO, size: int) -> bytes:
     if len(data) != size:
         raise EOFError(f"Unexpected end of file while reading {size} bytes")
     return data
+
+
+def _stream_size(handle: BinaryIO) -> int:
+    position = handle.tell()
+    try:
+        return int(handle.seek(0, 2))
+    finally:
+        handle.seek(position, 0)
 
 
 def _read_u16(handle: BinaryIO) -> int:
@@ -226,14 +233,18 @@ def _read_qi_index(handle: BinaryIO, nr_static_packets: int) -> dict[str, object
 def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[str, object]]:
     handle.seek(188_664, 0)
     lqi = int(qi_index.get("LQi", 0) or 0)
-    if lqi < 0 or lqi > _MAX_BULK_INDEX_RECORDS:
-        raise ValueError(
-            f"QIIndex2 record count {lqi} exceeds the safe limit "
-            f"of {_MAX_BULK_INDEX_RECORDS}"
+    record_struct = struct.Struct("<HHIIIIIIIQQI")
+    if lqi < 0:
+        raise ValueError(f"QIIndex2 record count cannot be negative: {lqi}")
+    available_bytes = max(0, _stream_size(handle) - handle.tell())
+    required_bytes = lqi * record_struct.size
+    if required_bytes > available_bytes:
+        raise EOFError(
+            f"Unexpected end of file: {lqi} QIIndex2 records cannot fit "
+            "within the remaining stream"
         )
     entries: list[dict[str, object]] = []
-    record_struct = struct.Struct("<HHIIIIIIIQQI")
-    raw = _read_exact(handle, lqi * record_struct.size)
+    raw = _read_exact(handle, required_bytes)
     for values in record_struct.iter_unpack(raw):
         (
             index_low,
@@ -269,33 +280,35 @@ def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[
 
 
 def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[MainIndexEntry]:
-    if nr_entries < 0 or nr_entries > _MAX_BULK_INDEX_RECORDS:
-        raise ValueError(
-            f"MainIndex record count {nr_entries} exceeds the safe limit "
-            f"of {_MAX_BULK_INDEX_RECORDS}"
-        )
+    record_struct = struct.Struct("<QQQ")
+    if nr_entries < 0:
+        raise ValueError(f"MainIndex record count cannot be negative: {nr_entries}")
+    stream_size = _stream_size(handle)
     entries: list[MainIndexEntry] = []
     next_pointer = index_idx
     read_entries = 0
-    record_struct = struct.Struct("<QQQ")
     seen_pointers: set[int] = set()
     while read_entries < nr_entries:
         if next_pointer in seen_pointers:
             raise ValueError(f"MainIndex contains a repeated block pointer: {next_pointer}")
         seen_pointers.add(next_pointer)
+        if next_pointer < 0 or next_pointer > stream_size - _UINT64.size:
+            raise ValueError(f"MainIndex block pointer is outside the stream: {next_pointer}")
         handle.seek(next_pointer, 0)
         nr_idx = _read_u64(handle)
         if nr_idx == 0:
             raise ValueError("MainIndex block declares zero records before the index is complete")
-        if nr_idx > _MAX_BULK_INDEX_RECORDS:
-            raise ValueError(
-                f"MainIndex block record count {nr_idx} exceeds the safe limit "
-                f"of {_MAX_BULK_INDEX_RECORDS}"
-            )
         remaining = nr_entries - read_entries
         if nr_idx > remaining:
             raise ValueError(
                 f"MainIndex block declares {nr_idx} records with only {remaining} expected"
+            )
+        required_block_bytes = int(nr_idx) * record_struct.size + _UINT64.size
+        available_block_bytes = max(0, stream_size - handle.tell())
+        if required_block_bytes > available_block_bytes:
+            raise EOFError(
+                f"Unexpected end of file: MainIndex block with {nr_idx} records "
+                "cannot fit within the remaining stream"
             )
         raw = _read_exact(handle, int(nr_idx) * record_struct.size)
         for section_idx, offset, block_l_raw in record_struct.iter_unpack(raw):

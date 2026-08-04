@@ -51,7 +51,7 @@ def test_qi_index2_bulk_decodes_complete_records() -> None:
     ]
 
 
-def test_qi_index2_rejects_truncated_and_unsafe_counts_before_large_read() -> None:
+def test_qi_index2_rejects_truncated_and_impossible_counts_before_large_read() -> None:
     truncated = io.BytesIO(b"\x00" * _QI_INDEX2_OFFSET + b"\x00" * (_QI_INDEX2_RECORD.size - 1))
     with pytest.raises(EOFError, match="Unexpected end of file"):
         _read_qi_index2(truncated, {"LQi": 1})
@@ -63,8 +63,8 @@ def test_qi_index2_rejects_truncated_and_unsafe_counts_before_large_read() -> No
             return super().read(size)
 
     guarded = NoBulkRead(b"\x00" * _QI_INDEX2_OFFSET)
-    with pytest.raises(ValueError, match="QIIndex2 record count"):
-        _read_qi_index2(guarded, {"LQi": header_module._MAX_BULK_INDEX_RECORDS + 1})
+    with pytest.raises(EOFError, match="cannot fit within the remaining stream"):
+        _read_qi_index2(guarded, {"LQi": 2})
 
 
 def test_main_index_bulk_decodes_complete_chain() -> None:
@@ -96,9 +96,32 @@ def test_main_index_rejects_malformed_or_truncated_block_counts(
         _read_main_index(io.BytesIO(payload), 0, nr_entries)
 
 
-def test_main_index_rejects_unsafe_total_before_reading() -> None:
-    with pytest.raises(ValueError, match="MainIndex record count"):
-        _read_main_index(io.BytesIO(), 0, header_module._MAX_BULK_INDEX_RECORDS + 1)
+def test_main_index_rejects_block_that_cannot_fit_stream_before_bulk_read() -> None:
+    class NoBulkRead(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            if size is not None and size > _MAIN_INDEX_RECORD.size:
+                raise AssertionError("unsafe bulk read was attempted")
+            return super().read(size)
+
+    payload = struct.pack("<Q", 2) + bytes(_MAIN_INDEX_RECORD.size)
+    with pytest.raises(EOFError, match="cannot fit within the remaining stream"):
+        _read_main_index(NoBulkRead(payload), 0, 2)
+
+
+def test_main_index_accepts_more_than_one_million_records_when_stream_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_count = 1_000_001
+    payload = (
+        struct.pack("<Q", record_count)
+        + bytes(record_count * _MAIN_INDEX_RECORD.size)
+        + struct.pack("<Q", 0)
+    )
+    monkeypatch.setattr(header_module, "MainIndexEntry", lambda **_kwargs: None)
+
+    entries = _read_main_index(io.BytesIO(payload), 0, record_count)
+
+    assert len(entries) == record_count
 
 
 def _minimal_modern_header(path: Path) -> None:
