@@ -37,6 +37,20 @@ uv sync
 uv run nicolet-e2edf --help
 ```
 
+### Optional faster reads (0.4.0)
+
+Conversion got faster in 0.4.0 without changing the output bytes. There is also
+an experimental reader that merges adjacent disk reads into bigger ones (capped
+at 8 MiB per read). It produces identical output but is off by default for now;
+turn it on if you want the extra speed:
+
+```bash
+NICOLET_E2EDF_COALESCE_READS=1 uv run --isolated nicolet-e2edf \
+    --in /path/to/recording.e --out ./edf_output
+```
+
+or from Python: `read_nervus_data(path, header, coalesce_reads=True)`.
+
 ### Interactive Mode
 
 For a guided experience with menus and progress bars:

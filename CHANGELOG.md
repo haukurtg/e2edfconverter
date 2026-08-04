@@ -4,6 +4,13 @@
 
 -
 
+## 0.4.0 (2026-08-03)
+
+- Faster conversion: bulk index decoding, vectorised EDF record writing, and skipping the unused QIIndex2 table during conversion. Output bytes are unchanged.
+- Optional coalesced waveform reads, off by default: merges adjacent disk reads into bigger ones (capped at 8 MiB). Enable with `NICOLET_E2EDF_COALESCE_READS=1` or `read_nervus_data(..., coalesce_reads=True)`.
+- Fix index parsing to check declared record counts against the actual file size instead of trusting them blindly. Truncated or corrupt files now fail early with a clear error instead of hanging.
+- Add tests for the new reader and the parser/writer edge cases.
+
 ## 0.3.0 (2026-03-27)
 
 - Speed up hidden `UNKNOWN` montage-catalog parsing by normalizing and classifying UTF-16 tokens once per blob

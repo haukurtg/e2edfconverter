@@ -480,26 +480,24 @@ def write_edf(
             start_sample = record_idx * samples_per_channel_per_record
             end_sample = min(start_sample + samples_per_channel_per_record, n_samples)
             actual_samples = end_sample - start_sample
-            
-            # Write each signal's data for this record
-            for ch_idx in range(n_channels):
-                # Get this channel's data for this record
-                channel_data = data_uV[start_sample:end_sample, ch_idx]
-                
-                # Scale to digital values
-                scaled = (
-                    (channel_data - physical_min[ch_idx]) * scales[ch_idx] + digital_min[ch_idx]
+
+            # Quantise all channels in the record in one NumPy operation. The
+            # arithmetic order and dtypes match the former per-channel loop.
+            record_data = data_uV[start_sample:end_sample, :]
+            scaled = (
+                (record_data - physical_min[:n_channels]) * scales[:n_channels]
+                + digital_min[:n_channels]
+            )
+            signals = np.clip(np.rint(scaled), -32768, 32767).astype("<i2")
+            if actual_samples < samples_per_channel_per_record:
+                channel_major = np.zeros(
+                    (n_channels, samples_per_channel_per_record), dtype="<i2"
                 )
-                signal = np.clip(np.rint(scaled), -32768, 32767).astype("<i2")
-                
-                # Pad with zeros if this is a partial record (last record)
-                if actual_samples < samples_per_channel_per_record:
-                    padded = np.zeros(samples_per_channel_per_record, dtype="<i2")
-                    padded[:actual_samples] = signal
-                    signal = padded
-                
-                handle.write(signal.tobytes())
-            
+                channel_major[:, :actual_samples] = signals.T
+            else:
+                channel_major = signals.T
+            handle.write(channel_major.tobytes())
+
             # Write annotation signal for this record if included
             if include_annotations and events_per_record is not None:
                 # Build TAL bytes for this record

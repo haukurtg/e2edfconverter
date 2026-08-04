@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import struct
 import re
-from io import BytesIO
+import struct
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 
@@ -145,6 +145,14 @@ def _read_exact(handle: BinaryIO, size: int) -> bytes:
     return data
 
 
+def _stream_size(handle: BinaryIO) -> int:
+    position = handle.tell()
+    try:
+        return int(handle.seek(0, 2))
+    finally:
+        handle.seek(position, 0)
+
+
 def _read_u16(handle: BinaryIO) -> int:
     return _UINT16.unpack(_read_exact(handle, _UINT16.size))[0]
 
@@ -225,26 +233,41 @@ def _read_qi_index(handle: BinaryIO, nr_static_packets: int) -> dict[str, object
 def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[str, object]]:
     handle.seek(188_664, 0)
     lqi = int(qi_index.get("LQi", 0) or 0)
+    record_struct = struct.Struct("<HHIIIIIIIQQI")
+    if lqi < 0:
+        raise ValueError(f"QIIndex2 record count cannot be negative: {lqi}")
+    available_bytes = max(0, _stream_size(handle) - handle.tell())
+    required_bytes = lqi * record_struct.size
+    if required_bytes > available_bytes:
+        raise EOFError(
+            f"Unexpected end of file: {lqi} QIIndex2 records cannot fit "
+            "within the remaining stream"
+        )
     entries: list[dict[str, object]] = []
-    for _ in range(lqi):
-        index_low = _read_u16(handle)
-        index_high = _read_u16(handle)
-        misc1 = _read_u32(handle)
-        index_idx = _read_u32(handle)
-        misc2 = [_read_u32(handle) for _ in range(3)]
-        section_idx = _read_u32(handle)
-        misc3 = _read_u32(handle)
-        offset = _read_u64(handle)
-        block_and_section = _read_u64(handle)
+    raw = _read_exact(handle, required_bytes)
+    for values in record_struct.iter_unpack(raw):
+        (
+            index_low,
+            index_high,
+            misc1,
+            index_idx,
+            misc2_0,
+            misc2_1,
+            misc2_2,
+            section_idx,
+            misc3,
+            offset,
+            block_and_section,
+            data_len,
+        ) = values
         block_len = block_and_section & 0xFFFFFFFF
         section_len = (block_and_section >> 32) & 0xFFFFFFFF
-        data_len = _read_u32(handle)
         entries.append(
             {
                 "index": (index_low, index_high),
                 "misc1": misc1,
                 "indexIdx": index_idx,
-                "misc2": misc2,
+                "misc2": [misc2_0, misc2_1, misc2_2],
                 "sectionIdx": section_idx,
                 "misc3": misc3,
                 "offset": offset,
@@ -257,17 +280,38 @@ def _read_qi_index2(handle: BinaryIO, qi_index: dict[str, object]) -> list[dict[
 
 
 def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[MainIndexEntry]:
+    record_struct = struct.Struct("<QQQ")
+    if nr_entries < 0:
+        raise ValueError(f"MainIndex record count cannot be negative: {nr_entries}")
+    stream_size = _stream_size(handle)
     entries: list[MainIndexEntry] = []
     next_pointer = index_idx
     read_entries = 0
+    seen_pointers: set[int] = set()
     while read_entries < nr_entries:
+        if next_pointer in seen_pointers:
+            raise ValueError(f"MainIndex contains a repeated block pointer: {next_pointer}")
+        seen_pointers.add(next_pointer)
+        if next_pointer < 0 or next_pointer > stream_size - _UINT64.size:
+            raise ValueError(f"MainIndex block pointer is outside the stream: {next_pointer}")
         handle.seek(next_pointer, 0)
         nr_idx = _read_u64(handle)
-        chunk = [_read_u64(handle) for _ in range(3 * nr_idx)]
-        for i in range(int(nr_idx)):
-            section_idx = chunk[3 * i]
-            offset = chunk[3 * i + 1]
-            block_l_raw = chunk[3 * i + 2]
+        if nr_idx == 0:
+            raise ValueError("MainIndex block declares zero records before the index is complete")
+        remaining = nr_entries - read_entries
+        if nr_idx > remaining:
+            raise ValueError(
+                f"MainIndex block declares {nr_idx} records with only {remaining} expected"
+            )
+        required_block_bytes = int(nr_idx) * record_struct.size + _UINT64.size
+        available_block_bytes = max(0, stream_size - handle.tell())
+        if required_block_bytes > available_block_bytes:
+            raise EOFError(
+                f"Unexpected end of file: MainIndex block with {nr_idx} records "
+                "cannot fit within the remaining stream"
+            )
+        raw = _read_exact(handle, int(nr_idx) * record_struct.size)
+        for section_idx, offset, block_l_raw in record_struct.iter_unpack(raw):
             block_len = block_l_raw & 0xFFFFFFFF
             section_len = (block_l_raw >> 32) & 0xFFFFFFFF
             entries.append(
@@ -280,6 +324,8 @@ def _read_main_index(handle: BinaryIO, index_idx: int, nr_entries: int) -> list[
             )
         next_pointer = _read_u64(handle)
         read_entries += int(nr_idx)
+        if read_entries < nr_entries and next_pointer == 0:
+            raise ValueError("MainIndex chain ended before the declared record count")
     return entries
 
 
@@ -2019,7 +2065,7 @@ def _build_public_header(nrv_header: NervusHeader) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def read_nervus_header(path: str | Path):
+def read_nervus_header(path: str | Path, *, include_qi_index2: bool = True):
     filename = Path(path)
     if filename.suffix.lower() == ".eeg":
         from .legacy_eeg import read_legacy_header as read_legacy_eeg_header
@@ -2117,7 +2163,7 @@ def read_nervus_header(path: str | Path):
 
         static_packets = _read_static_packets(handle)
         qi_index = _read_qi_index(handle, len(static_packets))
-        qi_index2 = _read_qi_index2(handle, qi_index)
+        qi_index2 = _read_qi_index2(handle, qi_index) if include_qi_index2 else []
         main_index = _read_main_index(handle, index_idx, int(qi_index["nrEntries"]))
         info_guids = _read_info_guids(handle, static_packets, main_index)
         dynamic_packets = _read_dynamic_packets(handle, static_packets, main_index)

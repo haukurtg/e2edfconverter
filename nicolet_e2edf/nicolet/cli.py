@@ -1476,7 +1476,7 @@ def convert_file(
 ) -> Path:
     if status_cb:
         status_cb("read header")
-    public_header, nrv_header = read_nervus_header(input_path)
+    public_header, nrv_header = read_nervus_header(input_path, include_qi_index2=False)
     fs = public_header.get("Fs") or nrv_header.targetSamplingRate
     if not fs:
         raise RuntimeError("Unable to determine sampling frequency from header")
