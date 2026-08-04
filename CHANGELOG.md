@@ -6,10 +6,10 @@
 
 ## 0.4.0 (2026-08-03)
 
-- Add an explicitly opt-in, zero-gap physical-read coalescer for modern `.e` waveform data. It uses bounded spans of at most 8 MiB and is enabled with `coalesce_reads=True` or `NICOLET_E2EDF_COALESCE_READS=1`; the default reader remains unchanged.
-- Decode QIIndex2 and MainIndex records in bulk, while retaining QIIndex2 in the public header API by default and skipping that unused table during conversion.
-- Vectorise per-record EDF signal quantisation without changing the established rounding, clipping, non-finite replacement, channel order or final-record padding bytes.
-- Reject malformed or unsafe bulk index counts before allocation, and add byte-golden and deterministic differential coverage for parser, reader and writer boundaries.
+- Faster conversion: bulk index decoding, vectorised EDF record writing, and skipping the unused QIIndex2 table during conversion. Output bytes are unchanged.
+- Optional coalesced waveform reads, off by default: merges adjacent disk reads into bigger ones (capped at 8 MiB). Enable with `NICOLET_E2EDF_COALESCE_READS=1` or `read_nervus_data(..., coalesce_reads=True)`.
+- Fix index parsing to check declared record counts against the actual file size instead of trusting them blindly. Truncated or corrupt files now fail early with a clear error instead of hanging.
+- Add tests for the new reader and the parser/writer edge cases.
 
 ## 0.3.0 (2026-03-27)
 
