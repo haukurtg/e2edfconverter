@@ -10,29 +10,40 @@ A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format
 
 ## Quick Start
 
-Clone the repository (or download it as a ZIP) from GitHub:
+Install the latest release from PyPI. To run it once without installing it permanently:
+
+```bash
+uvx nicolet-e2edf --help
+uvx nicolet-e2edf --in /path/to/recording.e --out ./edf_output
+```
+
+To install it as a persistent `uv` tool:
+
+```bash
+uv tool install nicolet-e2edf
+nicolet-e2edf --in /path/to/recording.e --out ./edf_output
+```
+
+Or install it with `pip`:
+
+```bash
+python -m pip install nicolet-e2edf
+nicolet-e2edf --in /path/to/recording.e --out ./edf_output
+```
+
+The input can also be a folder containing `.e`/`.eeg` files:
+
+```bash
+nicolet-e2edf --in ./my_eeg_folder --out ./edf_output
+```
+
+### Install from source
+
+For development, clone the repository and let `uv` create the project environment:
 
 ```bash
 git clone https://github.com/haukurtg/e2edfconverter.git
 cd e2edfconverter
-```
-
-The easiest way — no manual environment/dependency setup needed (`uv` handles it for you):
-
-```bash
-# Install uv if you don't have it (https://docs.astral.sh/uv/)
-brew install uv  # or: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Convert a single file
-uv run --isolated nicolet-e2edf --in /path/to/recording.e --out ./edf_output
-
-# Convert a folder of .e/.eeg files
-uv run --isolated nicolet-e2edf --in ./my_eeg_folder --out ./edf_output
-```
-
-If you want a local environment for repeated use/development:
-
-```bash
 uv sync
 uv run nicolet-e2edf --help
 ```
@@ -45,7 +56,7 @@ at 8 MiB per read). It produces identical output but is off by default for now;
 turn it on if you want the extra speed:
 
 ```bash
-NICOLET_E2EDF_COALESCE_READS=1 uv run --isolated nicolet-e2edf \
+NICOLET_E2EDF_COALESCE_READS=1 nicolet-e2edf \
     --in /path/to/recording.e --out ./edf_output
 ```
 
@@ -56,8 +67,11 @@ or from Python: `read_nervus_data(path, header, coalesce_reads=True)`.
 For a guided experience with menus and progress bars:
 
 ```bash
-uv run --isolated --with rich nicolet-e2edf --ui
+uvx --with rich nicolet-e2edf --ui
 ```
+
+For a persistent installation, use `python -m pip install "nicolet-e2edf[tui]"`
+or `uv tool install "nicolet-e2edf[tui]"`, then run `nicolet-e2edf --ui`.
 
 ![TUI Screenshot](docs/tui_screenshot.png)
 
@@ -81,8 +95,11 @@ uv run --isolated --with rich nicolet-e2edf --ui
 **Filtering example:**
 
 ```bash
+# Install the optional filtering dependency once
+python -m pip install "nicolet-e2edf[filter]"
+
 # Clinical defaults: 0.5–35 Hz bandpass + 50 Hz notch
-uv run --isolated --with scipy nicolet-e2edf \
+nicolet-e2edf \
     --in ./data --out ./edf_output \
     --lowcut 0.5 --highcut 35 --notch 50
 ```
@@ -91,14 +108,14 @@ uv run --isolated --with scipy nicolet-e2edf \
 
 ```bash
 # Match vendor-style exports (split per segment + suppress system events)
-uv run --isolated nicolet-e2edf \
+nicolet-e2edf \
     --in /path/to/recording.e --out ./edf_output \
     --split-by-segment --vendor-style --json-sidecar
 ```
 
 ## Viewing the Results
 
-There's a bundled viewer script that shows your EDF in a double-banana montage:
+In a source checkout, the bundled viewer script shows your EDF in a double-banana montage:
 
 ```bash
 uv run --isolated --with mne python inspect_edf.py ./edf_output/recording.edf
