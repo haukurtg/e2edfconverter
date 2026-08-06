@@ -19,6 +19,12 @@ dependencies = [
     "numpy>=1.23"
 ]
 
+[project.urls]
+Homepage = "https://github.com/haukurtg/e2edfconverter"
+Repository = "https://github.com/haukurtg/e2edfconverter"
+Issues = "https://github.com/haukurtg/e2edfconverter/issues"
+Changelog = "https://github.com/haukurtg/e2edfconverter/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
