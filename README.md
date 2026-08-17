@@ -1,12 +1,10 @@
-# Nicolet `.e`/`.eeg` → EDF
+# Natus/Nicolet/Nervus `.e` → EDF+
 
 <img src="docs/logo.png" alt="Logo" width="200">
 
-A Python tool to convert Nicolet/Nervus `.e` EEG files into standard EDF+ format. No vendor DLLs, no MATLAB (which costs money!), just Python! I couldn't find a native Python way to get `.e` files out of their vendor format, so me and Opus 4.5 wrote this.
+An open-source Python converter for Natus/Nicolet/Nervus `.e` EEG recordings to standard EDF+ format. It runs without vendor DLLs or MATLAB and can convert individual recordings or folders from the command line. Legacy `.eeg` support is experimental; see [Limitations](#limitations).
 
-> **Acknowledgment**: This project wouldn't exist without the excellent [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox. Their MATLAB implementation of the Nervus/Nicolet file format (`read_nervus_header.m` and `read_nervus_data.m`) was the foundation for this Python port. Since then, we've added substantial GUID/event and channel ID parsing logic through our own reverse‑engineering work. Thank you to the FieldTrip team!
-
-> **Note**: Some of our reverse‑engineered event labels are (unfortunately) in Norwegian.
+> **Note**: Some reverse-engineered event labels are currently in Norwegian.
 
 ## Quick Start
 
@@ -162,10 +160,14 @@ Recommended workflow for performance changes:
 3. Run `uv run pytest`.
 4. Run the regression-equivalence validator before merging.
 
+## Acknowledgements
 
+The MATLAB implementation of the Nervus/Nicolet file format in the [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox provided the foundation for this Python port. Additional GUID, event and channel-ID handling was developed through reverse engineering.
+
+Development was assisted by various coding models used through Cursor.
 
 ## License
 
 GPL-3.0 — see `LICENSE`.
 
-This project adapts logic from the [FieldTrip](https://github.com/fieldtrip/fieldtrip) toolbox (GPL-3.0).
+This project adapts logic from the FieldTrip toolbox (GPL-3.0).

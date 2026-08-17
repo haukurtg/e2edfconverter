@@ -4,6 +4,11 @@
 
 -
 
+## 0.4.1 (2026-08-17)
+
+- Improve GitHub and PyPI discoverability for Natus/Nicolet/Nervus, EEG and EDF+ searches.
+- Refresh the README introduction and acknowledgements without changing converter behaviour.
+
 ## 0.4.0 (2026-08-03)
 
 - Faster conversion: bulk index decoding, vectorised EDF record writing, and skipping the unused QIIndex2 table during conversion. Output bytes are unchanged.
