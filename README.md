@@ -1,6 +1,6 @@
 # Natus/Nicolet/Nervus `.e` → EDF+
 
-<img src="docs/logo.png" alt="Logo" width="200">
+<img src="https://raw.githubusercontent.com/haukurtg/e2edfconverter/main/docs/logo.png" alt="Logo" width="200">
 
 An open-source Python converter for Natus/Nicolet/Nervus `.e` EEG recordings to standard EDF+ format. It runs without vendor DLLs or MATLAB and can convert individual recordings or folders from the command line. Legacy `.eeg` support is experimental; see [Limitations](#limitations).
 
@@ -71,7 +71,7 @@ uvx --with rich nicolet-e2edf --ui
 For a persistent installation, use `python -m pip install "nicolet-e2edf[tui]"`
 or `uv tool install "nicolet-e2edf[tui]"`, then run `nicolet-e2edf --ui`.
 
-![TUI Screenshot](docs/tui_screenshot.png)
+![TUI Screenshot](https://raw.githubusercontent.com/haukurtg/e2edfconverter/main/docs/tui_screenshot.png)
 
 ## CLI Options
 

@@ -4,6 +4,10 @@
 
 -
 
+## 0.4.2 (2026-08-29)
+
+- Fix README image URLs so the logo and terminal screenshot render on PyPI.
+
 ## 0.4.1 (2026-08-17)
 
 - Improve GitHub and PyPI discoverability for Natus/Nicolet/Nervus, EEG and EDF+ searches.

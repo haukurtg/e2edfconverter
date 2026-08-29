@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nicolet-e2edf"
-version = "0.4.1"
+version = "0.4.2"
 description = "Open-source Python converter for Natus/Nicolet/Nervus .e EEG recordings to EDF+."
 readme = "README.md"
 license = {file = "LICENSE"}
