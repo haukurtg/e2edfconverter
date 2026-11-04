@@ -4,6 +4,10 @@
 
 -
 
+## 0.4.3 (2026-11-04)
+
+- Fixed EDF amplitude scaling for channels whose physical range is below 1 µV, which were previously written at range × true amplitude. Physical bounds are now rounded outwards and quantisation uses the serialised header values. Affected exports are only channels whose whole-recording range is under 1 µV, in practice flat or disconnected channels.
+
 ## 0.4.2 (2026-08-29)
 
 - Fix README image URLs so the logo and terminal screenshot render on PyPI.

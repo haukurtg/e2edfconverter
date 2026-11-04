@@ -139,6 +139,36 @@ def _format_float(value: float, length: int, decimals: int = 3) -> bytes:
     return _pad(text, length)
 
 
+def _edf_header_float(value: float, length: int = 8) -> float:
+    """Return the numeric value that will actually be stored in an EDF field."""
+    return float(_format_float(float(value), length).decode("ascii").strip())
+
+
+def _edf_physical_bound(value: float, *, lower: bool) -> float:
+    """Round an EDF physical bound outwards so it still contains the data.
+
+    EDF stores physical_min/physical_max as fixed-width ASCII. Plain 3-decimal
+    formatting can move a bound inwards (or disagree with the NumPy extrema used
+    for scaling). Step by the last printed decimal and raise if no outward value
+    fits within a few attempts.
+    """
+    text = _format_float(float(value), 8).decode("ascii").strip()
+    stored = float(text)
+    # Lower bound must stay <= true min; upper bound must stay >= true max.
+    needs_adjustment = stored > value if lower else stored < value
+    if not needs_adjustment:
+        return stored
+
+    decimals = len(text.partition(".")[2]) if "." in text else 0
+    step = 10.0 ** -decimals
+    direction = -1.0 if lower else 1.0
+    for _ in range(4):
+        stored = _edf_header_float(stored + direction * step)
+        if (lower and stored <= value) or (not lower and stored >= value):
+            return stored
+    raise ValueError("Unable to represent an outward EDF physical bound")
+
+
 def _channel_label(name: str, index: int) -> str:
     cleaned = name.split("\x00", 1)[0].strip()
     cleaned = "".join(ch for ch in cleaned if 32 <= ord(ch) <= 126)
@@ -401,8 +431,25 @@ def write_edf(
     if np.any(equal_mask):
         # Add 1.0 to max for channels with constant values (preserves the data)
         physical_max = np.where(equal_mask, physical_max + 1.0, physical_max)
-    
-    physical_diff = np.maximum(physical_max - physical_min, 1.0)
+
+    # EDF physical extrema are fixed-width ASCII values. Quantise against the
+    # values that readers will recover from the header, not the higher-precision
+    # NumPy extrema, otherwise decoded samples can be more than half an EDF LSB
+    # away from the source waveform. Round outwards so stored_min <= true min
+    # and stored_max >= true max.
+    physical_min = np.asarray(
+        [_edf_physical_bound(value, lower=True) for value in physical_min]
+    )
+    physical_max = np.asarray(
+        [_edf_physical_bound(value, lower=False) for value in physical_max]
+    )
+    equal_mask = physical_min == physical_max
+    if np.any(equal_mask):
+        physical_max = np.where(equal_mask, physical_min + 1.0, physical_max)
+
+    # Use the true (serialised) span. Do not clamp to 1.0: that used to squash
+    # any channel whose whole-recording range was below 1 µV.
+    physical_diff = physical_max - physical_min
     
     # Digital range for EEG signals: full 16-bit signed range
     digital_min = np.full(n_channels, -32768, dtype=np.int32)
